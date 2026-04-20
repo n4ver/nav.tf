@@ -3,7 +3,17 @@
 from sqlmodel import Session, select, func, desc, asc
 from typing import List, Literal, Optional, Dict, Any
 from models import Player, MatchStat, Match, Class, MedicStat, Tournament
-from schemas import LeaderboardEntryResponse, LogStatsResponse, LogStatEntry, LogStatsSummary, MedicStatResponse, PlayerSummaryResponse, PlayerClassBreakdown
+from schemas import (
+    LeaderboardEntryResponse,
+    LogStatsResponse,
+    LogStatEntry,
+    LogStatsSummary,
+    MedicStatResponse,
+    PlayerSummaryResponse,
+    PlayerClassBreakdown,
+    PlayerAggregateStats,
+    PlayerMatchEntry,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -107,6 +117,7 @@ class LeaderboardService:
         """Transform database row to LeaderboardEntryResponse."""
         return LeaderboardEntryResponse(  # type: ignore
             name=row.last_known_name,
+            steamid=row.steamid,
             class_name=row.name, # type: ignore
             avg_dpm=round(float(row.avg_dpm), 2),
             avg_hpm=round(float(row.avg_hpm), 2),
@@ -198,6 +209,59 @@ class PlayerService:
         if not player:
             raise ValueError(f"Player {steam_id} not found")
 
+        match_rows_query = (
+            select(MatchStat, Match, Class, MedicStat)
+            .join(Match, Match.id == MatchStat.match_id)  # type: ignore
+            .join(Class, Class.id == MatchStat.class_id)  # type: ignore
+            .outerjoin(MedicStat, MedicStat.matchstat_id == MatchStat.id)  # type: ignore
+            .where(MatchStat.player_id == player.id)
+            .order_by(desc(Match.id))
+        )
+        match_rows = db.exec(match_rows_query).all()
+
+        total_kills = 0
+        total_deaths = 0
+        total_playtime = 0
+        total_dpm = 0.0
+        total_damage_dealt = 0
+        total_damage_received = 0
+        total_heals_received = 0
+        match_entries: List[PlayerMatchEntry] = []
+
+        for stat, match, player_class, medic in match_rows:
+            total_kills += int(stat.kills or 0)
+            total_deaths += int(stat.deaths or 0)
+            total_playtime += int(stat.playtime or 0)
+            total_dpm += float(stat.dpm or 0)
+            total_damage_dealt += int(stat.damage_dealt or 0)
+            total_damage_received += int(stat.damage_received or 0)
+            total_heals_received += int(stat.heals_received or 0)
+
+            match_entries.append(
+                PlayerMatchEntry(
+                    match_id=int(match.id or 0),
+                    log_id=int(match.log_id or 0),
+                    map=match.map,
+                    tournament_id=int(match.tournament_id or 0),
+                    class_name=player_class.name,
+                    team=stat.team,
+                    playtime_mins=int((stat.playtime or 0) // 60),
+                    kills=int(stat.kills or 0),
+                    deaths=int(stat.deaths or 0),
+                    dpm=round(float(stat.dpm or 0), 2),
+                    damage_dealt=int(stat.damage_dealt or 0),
+                    damage_received=int(stat.damage_received or 0),
+                    heals_received=int(stat.heals_received or 0),
+                    ubers=int(medic.ubers or 0) if medic else 0,
+                    drops=int(medic.drops or 0) if medic else 0,
+                    hpm=round(float(medic.hpm or 0), 2) if medic else 0.0,
+                )
+            )
+
+        matches_played = len(match_rows)
+        avg_dpm = round(total_dpm / matches_played, 2) if matches_played else 0.0
+        avg_kdr = round(total_kills / total_deaths, 2) if total_deaths else round(float(total_kills), 2)
+
         class_table = Class.__table__  # type: ignore[attr-defined]
         stat_table = MatchStat.__table__  # type: ignore[attr-defined]
 
@@ -227,6 +291,19 @@ class PlayerService:
 
         return PlayerSummaryResponse(
             steamid=steam_id,
+            player_name=player.last_known_name,
             ai_classification="Invite",  # TODO: Integrate ML model
+            aggregate_stats=PlayerAggregateStats(
+                matches_played=matches_played,
+                total_kills=total_kills,
+                total_deaths=total_deaths,
+                total_playtime_mins=total_playtime // 60,
+                avg_dpm=avg_dpm,
+                avg_kdr=avg_kdr,
+                total_damage_dealt=total_damage_dealt,
+                total_damage_received=total_damage_received,
+                total_heals_received=total_heals_received,
+            ),
             class_breakdown=class_breakdown,
+            matches=match_entries,
         )

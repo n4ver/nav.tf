@@ -15,6 +15,7 @@ class LeaderboardEntryResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
     
     name: str
+    steamid: str
     class_name: str = Field(alias="class")
     avg_dpm: float
     avg_hpm: float
@@ -63,10 +64,44 @@ class PlayerClassBreakdown(BaseModel):
     matches_played: int
 
 
+class PlayerAggregateStats(BaseModel):
+    matches_played: int
+    total_kills: int
+    total_deaths: int
+    total_playtime_mins: int
+    avg_dpm: float
+    avg_kdr: float
+    total_damage_dealt: int
+    total_damage_received: int
+    total_heals_received: int
+
+
+class PlayerMatchEntry(BaseModel):
+    match_id: int
+    log_id: int
+    map: str
+    tournament_id: int
+    class_name: str
+    team: str
+    playtime_mins: int
+    kills: int
+    deaths: int
+    dpm: float
+    damage_dealt: int
+    damage_received: int
+    heals_received: int
+    ubers: int
+    drops: int
+    hpm: float
+
+
 class PlayerSummaryResponse(BaseModel):
     steamid: str
+    player_name: Optional[str]
     ai_classification: str
+    aggregate_stats: PlayerAggregateStats
     class_breakdown: List[PlayerClassBreakdown]
+    matches: List[PlayerMatchEntry]
 
 
 class JobStatus(BaseModel):

@@ -35,6 +35,37 @@ body {
   min-height: 100svh;
 }
 
+.top-nav {
+  width: min(1160px, 95vw);
+  margin: 0 auto;
+  padding: 1.15rem 0 0.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
+.nav-link {
+  text-decoration: none;
+  color: #f3fbff;
+  border: 1px solid rgba(243, 251, 255, 0.35);
+  border-radius: 999px;
+  padding: 0.4rem 0.8rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.08);
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.nav-link:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: translateY(-1px);
+}
+
+.nav-link.router-link-active {
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+}
+
 .page-wrap {
   width: min(1160px, 95vw);
   margin: 0 auto;
@@ -191,6 +222,21 @@ th {
   color: #4b7088;
 }
 
+.inline-link {
+  color: #0c4f73;
+  text-decoration: none;
+  border-bottom: 1px solid rgba(12, 79, 115, 0.35);
+}
+
+.inline-link:hover {
+  color: #083850;
+  border-bottom-color: rgba(8, 56, 80, 0.65);
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
 .health-chip {
   margin-top: 0.7rem;
   display: inline-flex;
@@ -277,6 +323,11 @@ th {
 }
 
 @media (max-width: 640px) {
+  .top-nav {
+    width: min(1160px, 96vw);
+    padding-top: 0.7rem;
+  }
+
   .page-wrap {
     width: min(1160px, 96vw);
     padding: 1.2rem 0 2.1rem;
