@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  db:
+      image: postgres:15
+      environment:
+        POSTGRES_USER: user
+        POSTGRES_PASSWORD: password
+        POSTGRES_DB: tf2_stats
+      ports:
+        - "5432:5432"
+  api:
+    build: .
+    container_name: logproject-api
+    depends_on:
+      - db
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://user:password@db:5432/tf2_stats
+    restart: unless-stopped
