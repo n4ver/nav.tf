@@ -1,6 +1,6 @@
 from sqlmodel import SQLModel, Session, create_engine, select
 
-from models import Class, Player, get_class_id_from_name, get_or_create_player, seed_classes
+from src.models import Class, Player, get_class_id_from_name, get_or_create_player, seed_classes
 
 
 def build_test_session() -> Session:
