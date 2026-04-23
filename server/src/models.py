@@ -63,67 +63,6 @@ class Class(SQLModel, table=True):
     # Relationship back to stats (optional but helpful)
     stats: List["MatchStat"] = Relationship(back_populates="player_class")
 
-
-def save_complete_match(db: Session, logs_json: dict, tournament_id: int):
-    # 1. Create the Match object
-    new_match = Match(
-        log_id=logs_json["info"]["id"],
-        map=logs_json["info"]["map"],
-        tournament_id=tournament_id
-    )
-    db.add(new_match)
-    db.flush()
-
-    # 2. Iterate through players in the JSON
-    for steam_id, p_data in logs_json["players"].items():
-        # Loop through classes they played
-        for c_stats in p_data.get("class_stats", []):
-            total_time = c_stats.get("total_time", 0)
-            dpm = c_stats.get("dmg", 0) / (total_time / 60) if total_time > 0 else 0
-            player_id = get_or_create_player(db, steam_id, logs_json["names"][steam_id])
-            
-            # Create the MatchStat entry
-            stat_entry = MatchStat(
-                match_id=new_match.id, # type: ignore[arg-type]
-                player_id=player_id,
-                class_id=get_class_id_from_name(c_stats["type"]),
-                team=p_data.get("team", "Unknown"),
-                playtime=total_time,
-                kills=c_stats["kills"],
-                deaths=c_stats["deaths"],
-                dpm=dpm,
-                primary_accuracy=c_stats.get("weapon", {}).get("primary", {}).get("acc", 0.0),
-                damage_dealt=c_stats.get("dmg", 0),
-                damage_received=p_data.get("dt", 0),
-                heals_received=p_data.get("hr", 0),
-                headshots=c_stats.get("headshots", 0),
-                backstabs=c_stats.get("backstabs", 0),
-                airshots=c_stats.get("as", 0),
-                captures=c_stats.get("cpc", 0)
-            ) # type: ignore
-
-            # 3. If they are a Medic, attach MedicStat directly to stat_entry
-            if c_stats["type"].lower() == "medic":
-                healing_done = p_data.get("heal", 0)
-                hpm = healing_done / (total_time / 60) if total_time > 0 else 0
-                stat_entry.medic_detail = MedicStat(
-                    player_id=player_id,
-                    ubers=p_data.get("ubers", 0),
-                    drops=p_data.get("drops", 0),
-                    healing_done=healing_done,
-                    hpm=hpm
-                ) # type: ignore
-
-            # Add this stat entry to the match's list
-            new_match.stats.append(stat_entry)
-            db.add(stat_entry)
-            db.flush()
-
-    # 4. Save everything in ONE transaction
-    db.commit() 
-    db.refresh(new_match)
-    return new_match
-
 # Create a local mapping for fast lookups
 CLASS_MAP = {
     "scout": 0, "soldier": 1, "pyro": 2, "demoman": 3,
