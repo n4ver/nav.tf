@@ -17,6 +17,7 @@ class LeaderboardEntryResponse(BaseModel):
     name: str
     steamid: str
     class_name: str = Field(alias="class")
+    avg_rating: float
     avg_dpm: float
     avg_hpm: float
     avg_kad: float
@@ -66,6 +67,7 @@ class PlayerClassBreakdown(BaseModel):
 
 class PlayerAggregateStats(BaseModel):
     matches_played: int
+    avg_rating: float
     total_kills: int
     total_deaths: int
     total_playtime_mins: int
@@ -98,7 +100,6 @@ class PlayerMatchEntry(BaseModel):
 class PlayerSummaryResponse(BaseModel):
     steamid: str
     player_name: Optional[str]
-    ai_classification: str
     aggregate_stats: PlayerAggregateStats
     class_breakdown: List[PlayerClassBreakdown]
     matches: List[PlayerMatchEntry]

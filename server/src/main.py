@@ -203,16 +203,16 @@ def health_check(db: Session = Depends(get_session)):
 async def get_tournament_leaderboard(
     t_id: int,
     class_name: str = Query(..., description="TF2 class name (e.g., Scout, Medic, Soldier)"),
-    sort_by: Literal["dpm", "kad", "kills", "deaths", "playtime"] = Query(default="dpm"),
+    sort_by: Literal["rating", "dpm", "kad", "kills", "deaths", "playtime", "hpm", "ubers", "drops"] = Query(default="rating"),
     sort_order: Literal["asc", "desc"] = Query(default="desc"),
-    min_playtime_seconds: int = Query(default=600, ge=0),
+    min_playtime_seconds: int = Query(default=600, ge=600),
     limit: int = Query(default=10, ge=1, le=500),
     db: Session = Depends(get_session),
 ):
     """Get leaderboard for a specific tournament and class with specialized Medic metrics."""
     try:
         # Build query
-        statement, avg_hpm_expr, avg_dpm_expr, avg_kad_expr, avg_deaths_expr, total_playtime_expr, total_ubers_expr, total_drops_expr = (
+        statement, avg_hpm_expr, avg_dpm_expr, avg_kad_expr, avg_rating_expr, avg_deaths_expr, total_playtime_expr, total_ubers_expr, total_drops_expr = (
             LeaderboardService.build_leaderboard_query(
                 db, t_id, class_name, min_playtime_seconds, limit
             )
@@ -227,6 +227,7 @@ async def get_tournament_leaderboard(
             avg_hpm_expr,
             avg_dpm_expr,
             avg_kad_expr,
+            avg_rating_expr,
             None,
             avg_deaths_expr,
             total_playtime_expr,

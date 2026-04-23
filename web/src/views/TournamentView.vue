@@ -9,6 +9,8 @@ const healthError = ref('')
 
 const tournamentId = ref(1)
 const selectedClass = ref('Scout')
+const selectedSortBy = ref('rating')
+const selectedSortOrder = ref('desc')
 const leaderboard = ref([])
 const matches = ref([])
 const tournamentLoading = ref(false)
@@ -31,6 +33,58 @@ const tf2ClassOrder = [
 const classSortRank = new Map(
   tf2ClassOrder.map((name, index) => [name.toLowerCase(), index]),
 )
+
+const sortOptions = computed(() => {
+  if (selectedClass.value.toLowerCase() === 'medic') {
+    return [
+      { value: 'rating', label: 'Rating' },
+      { value: 'hpm', label: 'Avg HPM' },
+      { value: 'deaths', label: 'Avg Deaths' },
+      { value: 'drops', label: 'Total Drops' },
+      { value: 'ubers', label: 'Total Ubers' },
+      { value: 'playtime', label: 'Playtime' },
+    ]
+  }
+
+  return [
+    { value: 'rating', label: 'Rating' },
+    { value: 'dpm', label: 'Avg DPM' },
+    { value: 'kad', label: 'Avg KAD' },
+    { value: 'kills', label: 'Avg Kills' },
+    { value: 'deaths', label: 'Avg Deaths' },
+    { value: 'playtime', label: 'Playtime' },
+  ]
+})
+
+function numericValue(value) {
+  const number = Number(value)
+  return Number.isFinite(number) ? number : 0
+}
+
+function getSortValue(row, sortBy) {
+  switch (sortBy) {
+    case 'rating':
+      return numericValue(row.avg_rating)
+    case 'dpm':
+      return numericValue(row.avg_dpm)
+    case 'kad':
+      return numericValue(row.avg_kad)
+    case 'kills':
+      return numericValue(row.avg_kills)
+    case 'deaths':
+      return numericValue(row.avg_deaths)
+    case 'playtime':
+      return numericValue(row.playtime_mins)
+    case 'hpm':
+      return numericValue(row.avg_hpm)
+    case 'ubers':
+      return numericValue(row.total_ubers)
+    case 'drops':
+      return numericValue(row.total_drops)
+    default:
+      return numericValue(row.avg_rating)
+  }
+}
 
 function clampPage(page, totalPages) {
   return Math.min(Math.max(page, 1), totalPages)
@@ -62,7 +116,11 @@ const leaderboardByClass = computed(() => {
   }
 
   const sections = Array.from(grouped.entries()).map(([className, rows]) => {
-    const sortedRows = rows.slice().sort((a, b) => b.avg_dpm - a.avg_dpm)
+    const sortedRows = rows.slice().sort((a, b) => {
+      const left = getSortValue(a, selectedSortBy.value)
+      const right = getSortValue(b, selectedSortBy.value)
+      return selectedSortOrder.value === 'asc' ? left - right : right - left
+    })
     const totalPages = Math.max(1, Math.ceil(sortedRows.length / rowsPerClassPage))
     const rawPage = classPageByName.value[className] || 1
     const currentPage = clampPage(rawPage, totalPages)
@@ -114,7 +172,7 @@ async function loadTournamentData() {
 
   try {
     const [leaderboardData, matchesData] = await Promise.all([
-      fetchJson(`/tournaments/${tournamentId.value}/leaderboard?class_name=${encodeURIComponent(selectedClass.value)}&limit=10`),
+      fetchJson(`/tournaments/${tournamentId.value}/leaderboard?class_name=${encodeURIComponent(selectedClass.value)}&sort_by=${encodeURIComponent(selectedSortBy.value)}&sort_order=${encodeURIComponent(selectedSortOrder.value)}&min_playtime_seconds=600&limit=10`),
       fetchJson(`/tournaments/${tournamentId.value}/matches?limit=10&offset=0`),
     ])
     leaderboard.value = leaderboardData
@@ -134,6 +192,15 @@ onMounted(async () => {
 })
 
 watch(selectedClass, async () => {
+  const allowedValues = sortOptions.value.map((option) => option.value)
+  if (!allowedValues.includes(selectedSortBy.value)) {
+    selectedSortBy.value = 'rating'
+  }
+
+  await loadTournamentData()
+})
+
+watch([selectedSortBy, selectedSortOrder], async () => {
   await loadTournamentData()
 })
 </script>
@@ -178,6 +245,25 @@ watch(selectedClass, async () => {
                 <option value="Spy">Spy</option>
               </select>
             </label>
+            <label>
+              Sort By
+              <select v-model="selectedSortBy">
+                <option
+                  v-for="option in sortOptions"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              Order
+              <select v-model="selectedSortOrder">
+                <option value="desc">Descending</option>
+                <option value="asc">Ascending</option>
+              </select>
+            </label>
             <button type="submit" :disabled="tournamentLoading">Load</button>
           </form>
         </div>
@@ -195,6 +281,7 @@ watch(selectedClass, async () => {
                   <thead>
                     <tr>
                       <th>Name</th>
+                      <th>Avg Rating</th>
                       <th>Avg HPM</th>
                       <th>Total Drops</th>
                       <th>Avg Deaths</th>
@@ -212,6 +299,7 @@ watch(selectedClass, async () => {
                         </RouterLink>
                         <span v-else>{{ player.name }}</span>
                       </td>
+                      <td>{{ player.avg_rating }}</td>
                       <td>{{ player.avg_hpm }}</td>
                       <td>{{ player.total_drops }}</td>
                       <td>{{ player.avg_deaths }}</td>
@@ -222,6 +310,7 @@ watch(selectedClass, async () => {
                   <thead>
                     <tr>
                       <th>Name</th>
+                      <th>Avg Rating</th>
                       <th>Avg DPM</th>
                       <th>Avg Kills</th>
                       <th>Avg Deaths</th>
@@ -239,6 +328,7 @@ watch(selectedClass, async () => {
                         </RouterLink>
                         <span v-else>{{ player.name }}</span>
                       </td>
+                      <td>{{ player.avg_rating }}</td>
                       <td>{{ player.avg_dpm }}</td>
                       <td>{{ player.avg_kills }}</td>
                       <td>{{ player.avg_deaths }}</td>

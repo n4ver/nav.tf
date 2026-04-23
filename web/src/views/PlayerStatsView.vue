@@ -33,6 +33,13 @@ async function loadPlayerSummary() {
   }
 }
 
+function formatRating(value) {
+  if (typeof value !== 'number' || Number.isNaN(value)) {
+    return 'N/A'
+  }
+  return value.toFixed(3)
+}
+
 async function submitAndLoad() {
   const encodedSteamId = encodeURIComponent(steamId.value)
   await router.replace(`/player/${encodedSteamId}`)
@@ -85,6 +92,9 @@ onMounted(async () => {
           <p class="status-msg">
             Classification: <strong>{{ playerSummary.ai_classification }}</strong>
           </p>
+          <p class="rating-chip">
+            Average Rating: <strong>{{ formatRating(playerSummary.aggregate_stats.avg_rating) }}</strong>
+          </p>
             <p>
               <strong>{{ playerSummary.player_name || steamId }}</strong>
             </p>
@@ -94,6 +104,7 @@ onMounted(async () => {
                 <h3>Aggregate Stats</h3>
                 <ul class="stat-list">
                   <li><strong>Matches:</strong> {{ playerSummary.aggregate_stats.matches_played }}</li>
+                  <li><strong>Avg Rating:</strong> {{ formatRating(playerSummary.aggregate_stats.avg_rating) }}</li>
                   <li><strong>Total Kills:</strong> {{ playerSummary.aggregate_stats.total_kills }}</li>
                   <li><strong>Total Deaths:</strong> {{ playerSummary.aggregate_stats.total_deaths }}</li>
                   <li><strong>Avg DPM:</strong> {{ playerSummary.aggregate_stats.avg_dpm }}</li>
@@ -170,3 +181,17 @@ onMounted(async () => {
     </main>
   </div>
 </template>
+
+<style scoped>
+.rating-chip {
+  margin: 0.35rem 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.36rem 0.62rem;
+  border-radius: 999px;
+  background: rgba(12, 79, 115, 0.12);
+  border: 1px solid rgba(12, 79, 115, 0.3);
+  color: #0b415e;
+}
+</style>

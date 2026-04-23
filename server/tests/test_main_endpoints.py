@@ -281,3 +281,75 @@ def test_leaderboard_supports_class_filter() -> None:
         assert payload[0]["steamid"] == "steam_medic"
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_player_summary_includes_average_rating() -> None:
+    test_client, engine = build_test_client_with_db()
+    try:
+        with Session(engine) as test_session:
+            tournament = Tournament(id=11, name="RGL")
+            test_session.add(tournament)
+
+            player = Player(steamid="steam_rating", last_known_name="Rated Player")
+            test_session.add(player)
+            test_session.commit()
+            test_session.refresh(player)
+
+            match_1 = Match(log_id=30001, map="cp_snakewater", tournament_id=11)
+            match_2 = Match(log_id=30002, map="cp_process", tournament_id=11)
+            test_session.add(match_1)
+            test_session.add(match_2)
+            test_session.commit()
+            test_session.refresh(match_1)
+            test_session.refresh(match_2)
+
+            stat_1 = MatchStat(
+                match_id=match_1.id, # type: ignore[arg-type]
+                player_id=player.id, # type: ignore[arg-type]
+                class_id=0,
+                team="Red",
+                playtime=900,
+                kills=22,
+                deaths=10,
+                dpm=280.0,
+                primary_accuracy=40.0,
+                damage_dealt=5100,
+                damage_received=3700,
+                heals_received=3200,
+                headshots=0,
+                backstabs=0,
+                airshots=0,
+                captures=2,
+            )
+            stat_2 = MatchStat(
+                match_id=match_2.id, # type: ignore[arg-type]
+                player_id=player.id, # type: ignore[arg-type]
+                class_id=0,
+                team="Blue",
+                playtime=960,
+                kills=19,
+                deaths=9,
+                dpm=265.0,
+                primary_accuracy=38.0,
+                damage_dealt=4850,
+                damage_received=3600,
+                heals_received=3000,
+                headshots=0,
+                backstabs=0,
+                airshots=0,
+                captures=1,
+            )
+            test_session.add(stat_1)
+            test_session.add(stat_2)
+            test_session.commit()
+
+        response = test_client.get("/players/steam_rating/summary")
+        assert response.status_code == 200
+
+        payload = response.json()
+        assert "avg_rating" in payload["aggregate_stats"]
+        assert isinstance(payload["aggregate_stats"]["avg_rating"], float)
+        assert payload["aggregate_stats"]["avg_rating"] > 0.0
+        assert payload["ai_classification"] in {"Below Avg", "Average", "Above Avg", "Elite"}
+    finally:
+        main.app.dependency_overrides.clear()
