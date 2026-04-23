@@ -191,7 +191,6 @@ async def _ingest_log_data(db: AsyncSession, log_id: int, tournament_id: int, da
                 captures=c_stats.get("cpc", 0),
             )
             
-            new_match.stats.append(stat_entry)
             db.add(stat_entry)
             await db.flush()
 
