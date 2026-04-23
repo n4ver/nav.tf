@@ -3,7 +3,7 @@ import re
 from pathlib import Path
 
 # Base URL for the ingest endpoint
-BASE_URL = "http://localhost:8000/logs/ingest"
+BASE_URL = "http://localhost:8000/logs"
 
 # Tournament map: section name -> tournament_id
 TOURNAMENT_MAP = {
@@ -59,7 +59,7 @@ def ingest_logs(logs: list[tuple[int, int]]) -> None:
     
     for log_id, tournament_id in logs:
         try:
-            url = f"{BASE_URL}/{log_id}"
+            url = f"{BASE_URL}/ingest/{log_id}"
             params = {"tournament_id": tournament_id}
             response = session.post(url, params=params, timeout=5)
             
