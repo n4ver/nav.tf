@@ -17,5 +17,5 @@ services:
     ports:
       - "8000:8000"
     environment:
-      DATABASE_URL: postgresql://user:password@db:5432/tf2_stats
+      DATABASE_URL: postgresql+asyncpg://user:password@db:5432/tf2_stats
     restart: unless-stopped

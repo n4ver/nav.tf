@@ -1,5 +1,7 @@
 from typing import List, Optional
-from sqlmodel import Field, Relationship, SQLModel, Session, select
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import Field, Relationship, SQLModel, select
 
 class Tournament(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -74,26 +76,27 @@ def get_class_id_from_name(name: str) -> int:
     normalized_name = name.lower()
     return CLASS_MAP.get(normalized_name, 0) # Default to Scout if unknown
 
-def get_or_create_player(db: Session, steam_id: str, current_name: str) -> int:
+async def get_or_create_player(db: AsyncSession, steam_id: str, current_name: str) -> int:
     # 1. Search for the player by SteamID
     statement = select(Player).where(Player.steamid == steam_id)
-    player = db.exec(statement).first()
+    result = await db.execute(statement)
+    player = result.scalars().first()
     
     if not player:
         # 2. If they don't exist, create them
         player = Player(steamid=steam_id, last_known_name=current_name)
         db.add(player)
-        db.flush()  # Generate ID within current transaction
-        db.refresh(player)
+        await db.flush()  # Generate ID within current transaction
+        await db.refresh(player)
     else:
         # Update the name if it has changed
         player.last_known_name = current_name
-        db.flush()
+        await db.flush()
 
-    db.refresh(player)
+    await db.refresh(player)
     return player.id #type: ignore
 
-def seed_classes(session: Session):
+async def seed_classes(session: AsyncSession):
     # The 9 official TF2 classes
     tf2_classes = [
         "Scout", "Soldier", "Pyro", "Demoman", 
@@ -103,19 +106,21 @@ def seed_classes(session: Session):
     for index, name in enumerate(tf2_classes):
         # Check if this class already exists
         statement = select(Class).where(Class.name == name)
-        existing_class = session.exec(statement).first()
+        result = await session.execute(statement)
+        existing_class = result.scalars().first()
 
         if not existing_class:
             # We use the list index as the ID to keep it consistent (0-8)
             new_class = Class(id=index, name=name)
             session.add(new_class)
     
-    session.commit()
+    await session.commit()
 
 
-def get_or_create_tournament(db: Session, tournament_id: int, name: str | None = None):
+async def get_or_create_tournament(db: AsyncSession, tournament_id: int, name: str | None = None):
     statement = select(Tournament).where(Tournament.id == tournament_id)
-    tournament = db.exec(statement).first()
+    result = await db.execute(statement)
+    tournament = result.scalars().first()
 
     if not tournament:
         tournament = Tournament(
@@ -123,7 +128,7 @@ def get_or_create_tournament(db: Session, tournament_id: int, name: str | None =
             name=name or f"Tournament {tournament_id}"
         )
         db.add(tournament)
-        db.flush()
-        db.refresh(tournament)
+        await db.flush()
+        await db.refresh(tournament)
 
     return tournament

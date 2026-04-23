@@ -1,6 +1,7 @@
 """Business logic and database services for TF2 analytics."""
 
-from sqlmodel import Session, select, func, desc, asc
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel import select, func, desc, asc
 from sqlalchemy import case
 from typing import List, Literal, Optional, Dict, Any
 from models import Player, MatchStat, Match, Class, MedicStat, Tournament
@@ -25,7 +26,7 @@ class LeaderboardService:
     
     @staticmethod
     def build_leaderboard_query(
-        db: Session,
+        db: AsyncSession,
         tournament_id: int,
         class_name: str,
         min_playtime_seconds: int = 1800, # 30 mins
@@ -165,9 +166,10 @@ class LogService:
     """Service for log statistics queries."""
     
     @staticmethod
-    def get_log_stats(db: Session, log_id: int) -> LogStatsResponse:
+    async def get_log_stats(db: AsyncSession, log_id: int) -> LogStatsResponse:
         """Get all stats for a specific log."""
-        match = db.exec(select(Match).where(Match.log_id == log_id)).first()
+        result = await db.execute(select(Match).where(Match.log_id == log_id))
+        match = result.scalars().first()
         if not match:
             raise ValueError(f"Log {log_id} not found")
 
@@ -179,7 +181,7 @@ class LogService:
             .where(MatchStat.match_id == match.id)
         )
 
-        rows = db.exec(statement).all()
+        rows = (await db.execute(statement)).all()
         entries: List[LogStatEntry] = []
         total_kills = 0
         total_deaths = 0
@@ -295,9 +297,10 @@ class PlayerService:
         return [round(max(0.0, min(2.0, value)), 3) for value in normalized]
     
     @staticmethod
-    def get_player_summary(db: Session, steam_id: str) -> PlayerSummaryResponse:
+    async def get_player_summary(db: AsyncSession, steam_id: str) -> PlayerSummaryResponse:
         """Get aggregate stats for a player across all matches."""
-        player = db.exec(select(Player).where(Player.steamid == steam_id)).first()
+        result = await db.execute(select(Player).where(Player.steamid == steam_id))
+        player = result.scalars().first()
         if not player:
             raise ValueError(f"Player {steam_id} not found")
 
@@ -309,7 +312,7 @@ class PlayerService:
             .where(MatchStat.player_id == player.id)
             .order_by(desc(Match.id))
         )
-        match_rows = db.exec(match_rows_query).all()
+        match_rows = (await db.execute(match_rows_query)).all()
 
         total_kills = 0
         total_deaths = 0
@@ -373,7 +376,7 @@ class PlayerService:
             .group_by(class_table.c.id, class_table.c.name)
         )
         
-        breakdown_rows = db.exec(stats_query).all()
+        breakdown_rows = (await db.execute(stats_query)).all()
 
         class_breakdown = [
             PlayerClassBreakdown(
