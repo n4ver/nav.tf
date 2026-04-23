@@ -11,6 +11,61 @@ const logStats = ref(null)
 const logLoading = ref(false)
 const logError = ref('')
 
+const matches = ref([])
+const matchesTotal = ref(0)
+const matchesPage = ref(1)
+const matchesPageSize = 20
+const matchesLoading = ref(false)
+const matchesError = ref('')
+
+function clampPage(page) {
+  return Math.max(1, Number(page) || 1)
+}
+
+function logPath(nextLogId) {
+  return `/match/${encodeURIComponent(String(nextLogId))}`
+}
+
+function formatTournamentName(match) {
+  if (match.tournament?.name) {
+    return `${match.tournament.name} (#${match.tournament_id})`
+  }
+  return `Tournament #${match.tournament_id}`
+}
+
+async function loadMatches() {
+  matchesLoading.value = true
+  matchesError.value = ''
+
+  try {
+    const offset = (matchesPage.value - 1) * matchesPageSize
+    const payload = await fetchJson(`/matches?limit=${matchesPageSize}&offset=${offset}`)
+    matches.value = Array.isArray(payload.items) ? payload.items : []
+    matchesTotal.value = Number(payload.total) || 0
+  } catch (error) {
+    matches.value = []
+    matchesTotal.value = 0
+    matchesError.value = error instanceof Error ? error.message : 'Failed to load matches'
+  } finally {
+    matchesLoading.value = false
+  }
+}
+
+const totalPages = () => Math.max(1, Math.ceil(matchesTotal.value / matchesPageSize))
+
+async function goToPage(nextPage) {
+  const safePage = Math.min(clampPage(nextPage), totalPages())
+  if (safePage === matchesPage.value) {
+    return
+  }
+
+  await router.replace({
+    name: 'match-stats',
+    params: route.params.logId ? { logId: String(route.params.logId) } : {},
+    query: { ...route.query, page: String(safePage) },
+  })
+}
+
 function playerPath(steamId) {
   return `/player/${encodeURIComponent(String(steamId))}`
 }
@@ -30,9 +85,24 @@ async function loadLogStats() {
 }
 
 async function submitAndLoad() {
-  await router.replace({ name: 'match-stats', params: { logId: String(logId.value) } })
+  await router.replace({
+    name: 'match-stats',
+    params: { logId: String(logId.value) },
+    query: route.query,
+  })
   await loadLogStats()
 }
+
+watch(
+  () => route.query.page,
+  async (nextPage) => {
+    const parsed = clampPage(nextPage)
+    if (parsed !== matchesPage.value) {
+      matchesPage.value = parsed
+      await loadMatches()
+    }
+  },
+)
 
 watch(
   () => route.params.logId,
@@ -50,6 +120,9 @@ watch(
 )
 
 onMounted(async () => {
+  matchesPage.value = clampPage(route.query.page)
+  await loadMatches()
+
   if (route.params.logId) {
     await loadLogStats()
   }
@@ -65,6 +138,57 @@ onMounted(async () => {
     </header>
 
     <main class="content-grid">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>All Matches</h2>
+          <p class="status-msg">Showing {{ matches.length }} of {{ matchesTotal }} total matches</p>
+        </div>
+
+        <p v-if="matchesError" class="error-msg">{{ matchesError }}</p>
+        <p v-if="matchesLoading" class="status-msg">Loading matches...</p>
+
+        <table v-if="!matchesLoading && matches.length">
+          <thead>
+            <tr>
+              <th>Log ID</th>
+              <th>Map</th>
+              <th>Tournament</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="match in matches" :key="match.id">
+              <td>
+                <RouterLink class="inline-link mono" :to="logPath(match.log_id)">
+                  {{ match.log_id }}
+                </RouterLink>
+              </td>
+              <td>{{ match.map }}</td>
+              <td>{{ formatTournamentName(match) }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <p v-if="!matchesLoading && !matchesError && !matches.length" class="status-msg">
+          No matches found.
+        </p>
+
+        <div class="leaderboard-pagination">
+          <button
+            :disabled="matchesLoading || matchesPage <= 1"
+            @click="goToPage(matchesPage - 1)"
+          >
+            Previous
+          </button>
+          <span>Page {{ matchesPage }} / {{ totalPages() }}</span>
+          <button
+            :disabled="matchesLoading || matchesPage >= totalPages()"
+            @click="goToPage(matchesPage + 1)"
+          >
+            Next
+          </button>
+        </div>
+      </section>
+
       <section class="panel">
         <div class="panel-head">
           <h2>Log Stats</h2>

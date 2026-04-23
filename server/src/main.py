@@ -10,6 +10,7 @@ from typing import Literal, Optional
 
 from fastapi import FastAPI, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import func
 from sqlmodel import Session, create_engine, SQLModel, select
 
 from models import Match, MatchStat, MedicStat, Player, Class
@@ -269,6 +270,32 @@ async def list_tournament_matches(
         return db.exec(statement).all()
     except Exception as exc:
         logger.error(f"Failed to list matches: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to fetch matches")
+
+
+@app.get("/matches", tags=["matches"])
+async def list_all_matches(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_session),
+):
+    """List all matches in the database with pagination metadata."""
+    try:
+        statement = (
+            select(Match)
+            .offset(offset)
+            .limit(limit)
+        )
+        total_count = int(db.exec(select(func.count()).select_from(Match)).one())
+        matches = db.exec(statement).all()
+        return {
+            "items": matches,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset,
+        }
+    except Exception as exc:
+        logger.error(f"Failed to list all matches: {exc}")
         raise HTTPException(status_code=500, detail="Failed to fetch matches")
 
 
