@@ -28,7 +28,7 @@ class LeaderboardService:
         db: Session,
         tournament_id: int,
         class_name: str,
-        min_playtime_seconds: int = 600,
+        min_playtime_seconds: int = 1800, # 30 mins
         limit: int = 10,
     ):
         """Build a leaderboard query for a specific tournament and class."""

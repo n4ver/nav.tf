@@ -74,6 +74,20 @@ def test_logs_status_returns_404_for_unknown_job() -> None:
     assert response.status_code == 404
     assert response.json() == {"detail": "Job not found"}
 
+def test_get_log_job_status_success() -> None:
+    job_id = 12345
+    main.JOB_STATUS[job_id] = {
+        "job_id": job_id,
+        "status": "completed",
+        "detail": None,
+        "updated_at": "2023-01-01T00:00:00Z",
+    }
+    try:
+        response = client.get(f"/logs/status/{job_id}")
+        assert response.status_code == 200
+        assert response.json() == main.JOB_STATUS[job_id]
+    finally:
+        del main.JOB_STATUS[job_id]
 
 def test_health_endpoint_returns_ok() -> None:
     test_client, engine = build_test_client_with_db()

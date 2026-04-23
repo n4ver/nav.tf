@@ -77,6 +77,29 @@ def ingest_logs(logs: list[tuple[int, int]]) -> None:
     print("-" * 60)
     print(f"Ingestion complete: {successful} successful, {failed} failed")
 
+
+def check_jobs(logs: list[tuple[int, int]]):
+    session = requests.Session()
+    failures = 0
+    for log_id, _tournament_id in logs:
+        try:
+            url = f"{BASE_URL}/status/{log_id}"
+            response = session.get(url)
+            if response.status_code == 200:
+                result = response.json()
+                status = result["status"]
+            elif response.status_code == 404:
+                status = "failed"
+            else:
+                status = "failed"
+            if status == "failed":
+                failures += 1
+                print(f"{log_id}: {status}")
+        except Exception as e:
+            print(e)
+    print("Total failures:", failures)
+
+
 if __name__ == "__main__":
     file_path = Path(__file__).parent / "invite.txt"
     
@@ -88,3 +111,4 @@ if __name__ == "__main__":
     print(f"Parsed {len(logs)} log IDs from {file_path}")
     
     ingest_logs(logs)
+    check_jobs(logs)

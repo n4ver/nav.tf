@@ -85,6 +85,14 @@ async def fetch_and_process_log(log_id: int, tournament_id: int):
     _set_job_status(log_id, "processing")
     
     try:
+        # Skip external fetch if this log is already ingested.
+        with Session(engine) as db:
+            existing_match = db.exec(select(Match).where(Match.log_id == log_id)).first()
+            if existing_match:
+                logger.info(f"Log {log_id} already ingested; skipping logs.tf fetch")
+                _set_job_status(log_id, "completed", "Already ingested")
+                return
+
         # Fetch log data from logs.tf
         async with httpx.AsyncClient() as client:
             response = await client.get(f"{LOGS_TF_API}/{log_id}")
@@ -306,7 +314,7 @@ def get_log_stats(log_id: int, db: Session = Depends(get_session)):
 # --- PLAYER ENDPOINTS ---
 
 @app.get("/players/{steam_id}/summary", tags=["players"])
-async def get_player_summary(steam_id: str, db: Session = Depends(get_session)):
+def get_player_summary(steam_id: str, db: Session = Depends(get_session)):
     """Get aggregate stats for a specific player across all matches."""
     try:
         return PlayerService.get_player_summary(db, steam_id)
