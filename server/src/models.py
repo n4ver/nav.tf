@@ -1,5 +1,7 @@
+from datetime import datetime
 from typing import List, Optional
 
+from sqlalchemy import Column, JSON
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import Field, Relationship, SQLModel, select
 
@@ -64,6 +66,35 @@ class Class(SQLModel, table=True):
 
     # Relationship back to stats (optional but helpful)
     stats: List["MatchStat"] = Relationship(back_populates="player_class")
+
+
+class ClassRatingBenchmark(SQLModel, table=True):
+    __tablename__ = "class_rating_benchmark" # type: ignore
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    class_id: int = Field(foreign_key="classes.id", unique=True, index=True)
+    sample_size: int = 0
+
+    # Distribution of raw weighted scores used for normalization to rating band.
+    raw_p05: float = 0.0
+    raw_p95: float = 1.0
+
+    # Distribution of per-player average ratings for this class.
+    avg_rating: float = 1.0
+    std_rating: float = 0.0
+    min_rating: float = 0.0
+    max_rating: float = 2.0
+    p10_rating: float = 0.0
+    p25_rating: float = 0.0
+    p50_rating: float = 0.0
+    p75_rating: float = 0.0
+    p90_rating: float = 0.0
+
+    # Stored class baseline vectors used to compute request-time z-scores.
+    metric_means: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    metric_stds: dict = Field(default_factory=dict, sa_column=Column(JSON))
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
 
 # Create a local mapping for fast lookups
 CLASS_MAP = {

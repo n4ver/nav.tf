@@ -13,9 +13,9 @@ from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlmodel import SQLModel, select
 
-from models import Match, MatchStat, MedicStat, Player, Class
+from models import Match, MatchStat, MedicStat, Player, Class, ClassRatingBenchmark
 from models import seed_classes, get_or_create_tournament, get_or_create_player, get_class_id_from_name
-from services import LeaderboardService, LogService, PlayerService
+from services import LeaderboardService, LogService, PlayerService, RatingService
 
 # --- LOGGING ---
 logging.basicConfig(level=logging.INFO)
@@ -86,6 +86,7 @@ async def on_startup():
 
     async with async_session_maker() as session:
         await seed_classes(session)
+        await RatingService.rebuild_class_benchmarks(session)
     logger.info("Database initialized and classes seeded.")
 
 
@@ -210,6 +211,7 @@ async def _ingest_log_data(db: AsyncSession, log_id: int, tournament_id: int, da
                 db.add(medic_stat)
 
     await db.commit()
+    await RatingService.rebuild_class_benchmarks(db)
 
 
 
@@ -225,6 +227,13 @@ async def health_check(db: AsyncSession = Depends(get_session)):
     except Exception as exc:
         logger.error(f"Health check failed: {exc}")
         raise HTTPException(status_code=500, detail="Database connection failed")
+
+
+@app.get("/benchmarks/class-rating", tags=["benchmarks"])
+async def get_class_rating_benchmarks(db: AsyncSession = Depends(get_session)):
+    """Return persisted class benchmark distribution dataframe used for request-time ratings."""
+    rows = (await db.execute(select(ClassRatingBenchmark))).scalars().all()
+    return rows
 
 
 # --- LEADERBOARD ENDPOINTS ---
@@ -267,7 +276,28 @@ async def get_tournament_leaderboard(
         
         # Execute and transform
         results = (await db.execute(statement)).all()
-        return [LeaderboardService.transform_leaderboard_result(r) for r in results]
+        rating_map = await RatingService.compute_tournament_class_player_ratings(
+            db,
+            t_id,
+            class_name,
+            min_playtime_seconds,
+        )
+
+        transformed = []
+        for row in results:
+            entry = LeaderboardService.transform_leaderboard_result(row)
+            if row.steamid in rating_map:
+                entry.avg_rating = rating_map[row.steamid]
+            transformed.append(entry)
+
+        if sort_by == "rating":
+            transformed = sorted(
+                transformed,
+                key=lambda item: item.avg_rating,
+                reverse=(sort_order == "desc"),
+            )
+
+        return transformed
     except Exception as exc:
         logger.error(f"Leaderboard query failed: {exc}")
         raise HTTPException(status_code=500, detail="Failed to fetch leaderboard")

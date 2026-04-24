@@ -1,10 +1,12 @@
 """Business logic and database services for TF2 analytics."""
 
+from collections import defaultdict
+from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func, desc, asc
 from sqlalchemy import case
 from typing import List, Literal, Optional, Dict, Any, Sequence
-from models import Player, MatchStat, Match, Class, MedicStat, Tournament
+from models import Player, MatchStat, Match, Class, MedicStat, Tournament, ClassRatingBenchmark
 from schemas import (
     LeaderboardEntryResponse,
     LogStatsResponse,
@@ -19,6 +21,314 @@ from schemas import (
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+class RatingService:
+    """Notebook-aligned z-score rating calculations and benchmark persistence."""
+
+    FEATURE_COLUMNS = [
+        "kills_per_min",
+        "deaths_per_min",
+        "dpm",
+        "primary_accuracy",
+        "damage_dealt_per_min",
+        "damage_received_per_min",
+        "heals_received_per_min",
+        "captures_per_min",
+        "healing_done_per_min",
+        "ubers_per_min",
+        "drops_per_min",
+        "objective_per_min",
+        "damage_efficiency",
+        "healing_efficiency",
+        "kill_conversion",
+        "pressure_resistance",
+        "medic_support_impact",
+    ]
+
+    IMPACT_WEIGHTS = {
+        "z_kills_per_min": 0.26,
+        "z_objective_per_min": 0.12,
+        "z_damage_efficiency": 0.18,
+        "z_healing_efficiency": -0.08,
+        "z_kill_conversion": 0.12,
+        "z_pressure_resistance": 0.10,
+        "z_primary_accuracy": 0.10,
+        "z_medic_support_impact": 0.10,
+    }
+
+    CLASS_WEIGHTS = {
+        0: {"k": 0.30, "d": 0.25, "s": 0.15, "i": 0.30},
+        6: {"k": 0.01, "d": 0.01, "s": 0.18, "i": 0.80},
+        7: {"k": 0.35, "d": 0.20, "s": 0.10, "i": 0.35},
+    }
+    DEFAULT_WEIGHTS = {"k": 0.25, "d": 0.25, "s": 0.20, "i": 0.30}
+
+    @staticmethod
+    def _percentile(values: list[float], q: float) -> float:
+        if not values:
+            return 0.0
+        if len(values) == 1:
+            return float(values[0])
+        sorted_vals = sorted(float(v) for v in values)
+        idx = q * (len(sorted_vals) - 1)
+        lower_idx = int(idx)
+        upper_idx = min(lower_idx + 1, len(sorted_vals) - 1)
+        frac = idx - lower_idx
+        return sorted_vals[lower_idx] * (1 - frac) + sorted_vals[upper_idx] * frac
+
+    @staticmethod
+    def _safe_std(values: list[float], mean: float) -> float:
+        if len(values) < 2:
+            return 0.0
+        variance = sum((float(v) - mean) ** 2 for v in values) / float(len(values))
+        return variance ** 0.5
+
+    @staticmethod
+    def _safe_ratio(numerator: float, denominator: float) -> float:
+        return float(numerator) / float(denominator) if float(denominator) != 0.0 else 0.0
+
+    @staticmethod
+    def _row_features(match_stat: MatchStat, medic_stat: Optional[MedicStat]) -> dict[str, float]:
+        minutes = max(float(match_stat.playtime or 0) / 60.0, 1.0 / 60.0)
+
+        kills_per_min = float(match_stat.kills or 0) / minutes
+        deaths_per_min = float(match_stat.deaths or 0) / minutes
+        damage_dealt_per_min = float(match_stat.damage_dealt or 0) / minutes
+        damage_received_per_min = float(match_stat.damage_received or 0) / minutes
+        heals_received_per_min = float(match_stat.heals_received or 0) / minutes
+        captures_per_min = float(match_stat.captures or 0) / minutes
+
+        healing_done = float(medic_stat.healing_done) if medic_stat else 0.0
+        ubers = float(medic_stat.ubers) if medic_stat else 0.0
+        drops = float(medic_stat.drops) if medic_stat else 0.0
+
+        healing_done_per_min = healing_done / minutes
+        ubers_per_min = ubers / minutes
+        drops_per_min = drops / minutes
+
+        damage_efficiency = RatingService._safe_ratio(damage_dealt_per_min, damage_received_per_min)
+        healing_efficiency = RatingService._safe_ratio(damage_received_per_min, heals_received_per_min)
+        kill_conversion = RatingService._safe_ratio(kills_per_min, damage_dealt_per_min) * 1000.0
+        pressure_resistance = -damage_received_per_min
+
+        medic_support_impact = (
+            (healing_done_per_min * 0.002)
+            + (ubers_per_min * 0.12)
+            - (drops_per_min * 0.18)
+        )
+
+        return {
+            "kills_per_min": kills_per_min,
+            "deaths_per_min": deaths_per_min,
+            "dpm": float(match_stat.dpm or 0.0),
+            "primary_accuracy": float(match_stat.primary_accuracy or 0.0),
+            "damage_dealt_per_min": damage_dealt_per_min,
+            "damage_received_per_min": damage_received_per_min,
+            "heals_received_per_min": heals_received_per_min,
+            "captures_per_min": captures_per_min,
+            "healing_done_per_min": healing_done_per_min,
+            "ubers_per_min": ubers_per_min,
+            "drops_per_min": drops_per_min,
+            "objective_per_min": captures_per_min,
+            "damage_efficiency": damage_efficiency,
+            "healing_efficiency": healing_efficiency,
+            "kill_conversion": kill_conversion,
+            "pressure_resistance": pressure_resistance,
+            "medic_support_impact": medic_support_impact,
+        }
+
+    @staticmethod
+    def _z_score(value: float, mean: float, std: float) -> float:
+        if std == 0.0:
+            return 0.0
+        return (value - mean) / std
+
+    @staticmethod
+    def _compute_raw_rating(class_id: int, feature_values: dict[str, float], means: dict[str, float], stds: dict[str, float]) -> float:
+        z: dict[str, float] = {}
+        for col in RatingService.FEATURE_COLUMNS:
+            z[f"z_{col}"] = RatingService._z_score(
+                float(feature_values.get(col, 0.0)),
+                float(means.get(col, 0.0)),
+                float(stds.get(col, 0.0)),
+            )
+
+        z_medic_support_impact = z.get("z_medic_support_impact", 0.0) if class_id == 6 else 0.0
+        survival_score = -z.get("z_deaths_per_min", 0.0)
+
+        impact_score = 0.0
+        for col, weight in RatingService.IMPACT_WEIGHTS.items():
+            impact_score += z.get(col, 0.0) * float(weight)
+
+        weights = RatingService.CLASS_WEIGHTS.get(class_id, RatingService.DEFAULT_WEIGHTS)
+        raw = (
+            (z.get("z_kills_per_min", 0.0) * float(weights["k"]))
+            + (z.get("z_dpm", 0.0) * float(weights["d"]))
+            + (survival_score * float(weights["s"]))
+            + (impact_score * float(weights["i"]))
+        )
+
+        if class_id == 6:
+            raw += z_medic_support_impact * 0.25
+
+        return raw
+
+    @staticmethod
+    def _normalize_raw_rating(raw_rating: float, p05: float, p95: float) -> float:
+        denom = (p95 - p05) if (p95 - p05) != 0.0 else 1.0
+        normalized = 0.6 + ((raw_rating - p05) / denom) * 0.8
+        return max(0.0, min(2.0, round(normalized, 3)))
+
+    @staticmethod
+    async def rebuild_class_benchmarks(db: AsyncSession) -> None:
+        """Recompute and persist class benchmark distributions and z-score baselines."""
+        rows = (
+            await db.execute(
+                select(MatchStat, MedicStat)
+                .outerjoin(MedicStat, MedicStat.matchstat_id == MatchStat.id)  # type: ignore
+            )
+        ).all()
+
+        if not rows:
+            return
+
+        class_feature_rows: dict[int, list[tuple[int, dict[str, float]]]] = defaultdict(list)
+        for match_stat, medic_stat in rows:
+            class_feature_rows[int(match_stat.class_id)].append(
+                (int(match_stat.player_id), RatingService._row_features(match_stat, medic_stat))
+            )
+
+        for class_id, entries in class_feature_rows.items():
+            feature_means: dict[str, float] = {}
+            feature_stds: dict[str, float] = {}
+
+            for col in RatingService.FEATURE_COLUMNS:
+                values = [float(feat.get(col, 0.0)) for _pid, feat in entries]
+                mean = sum(values) / len(values) if values else 0.0
+                std = RatingService._safe_std(values, mean)
+                feature_means[col] = float(mean)
+                feature_stds[col] = float(std)
+
+            raw_scores: list[float] = []
+            player_class_scores: dict[int, list[float]] = defaultdict(list)
+
+            for player_id, features in entries:
+                raw = RatingService._compute_raw_rating(class_id, features, feature_means, feature_stds)
+                raw_scores.append(raw)
+                player_class_scores[player_id].append(raw)
+
+            raw_p05 = RatingService._percentile(raw_scores, 0.05)
+            raw_p95 = RatingService._percentile(raw_scores, 0.95)
+
+            player_avg_ratings: list[float] = []
+            for raw_list in player_class_scores.values():
+                normalized = [RatingService._normalize_raw_rating(r, raw_p05, raw_p95) for r in raw_list]
+                player_avg_ratings.append(sum(normalized) / len(normalized) if normalized else 1.0)
+
+            if player_avg_ratings:
+                mean_rating = sum(player_avg_ratings) / len(player_avg_ratings)
+                std_rating = RatingService._safe_std(player_avg_ratings, mean_rating)
+            else:
+                mean_rating = 1.0
+                std_rating = 0.0
+
+            statement = select(ClassRatingBenchmark).where(ClassRatingBenchmark.class_id == class_id)
+            existing = (await db.execute(statement)).scalars().first()
+
+            benchmark_payload = {
+                "sample_size": len(player_avg_ratings),
+                "raw_p05": float(raw_p05),
+                "raw_p95": float(raw_p95),
+                "avg_rating": round(float(mean_rating), 4),
+                "std_rating": round(float(std_rating), 4),
+                "min_rating": round(min(player_avg_ratings), 4) if player_avg_ratings else 0.0,
+                "max_rating": round(max(player_avg_ratings), 4) if player_avg_ratings else 0.0,
+                "p10_rating": round(RatingService._percentile(player_avg_ratings, 0.10), 4),
+                "p25_rating": round(RatingService._percentile(player_avg_ratings, 0.25), 4),
+                "p50_rating": round(RatingService._percentile(player_avg_ratings, 0.50), 4),
+                "p75_rating": round(RatingService._percentile(player_avg_ratings, 0.75), 4),
+                "p90_rating": round(RatingService._percentile(player_avg_ratings, 0.90), 4),
+                "metric_means": feature_means,
+                "metric_stds": feature_stds,
+                "updated_at": datetime.utcnow(),
+            }
+
+            if existing:
+                for key, value in benchmark_payload.items():
+                    setattr(existing, key, value)
+            else:
+                db.add(
+                    ClassRatingBenchmark(
+                        class_id=class_id,
+                        **benchmark_payload,
+                    )
+                )
+
+        await db.commit()
+
+    @staticmethod
+    async def get_benchmark_map(db: AsyncSession) -> dict[int, ClassRatingBenchmark]:
+        rows = (await db.execute(select(ClassRatingBenchmark))).scalars().all()
+        return {int(row.class_id): row for row in rows}
+
+    @staticmethod
+    async def score_match_stat_rows(
+        db: AsyncSession,
+        rows: Sequence[tuple[MatchStat, Optional[MedicStat]]],
+        benchmark_map: Optional[dict[int, ClassRatingBenchmark]] = None,
+    ) -> list[float]:
+        if benchmark_map is None:
+            benchmark_map = await RatingService.get_benchmark_map(db)
+
+        ratings: list[float] = []
+        for match_stat, medic_stat in rows:
+            class_id = int(match_stat.class_id)
+            benchmark = benchmark_map.get(class_id)
+            if not benchmark:
+                ratings.append(1.0)
+                continue
+
+            features = RatingService._row_features(match_stat, medic_stat)
+            means = dict(benchmark.metric_means or {})
+            stds = dict(benchmark.metric_stds or {})
+            raw = RatingService._compute_raw_rating(class_id, features, means, stds)
+            rating = RatingService._normalize_raw_rating(raw, float(benchmark.raw_p05), float(benchmark.raw_p95))
+            ratings.append(rating)
+
+        return ratings
+
+    @staticmethod
+    async def compute_tournament_class_player_ratings(
+        db: AsyncSession,
+        tournament_id: int,
+        class_name: str,
+        min_playtime_seconds: int,
+    ) -> dict[str, float]:
+        statement = (
+            select(Player.steamid, MatchStat, MedicStat)
+            .join(MatchStat, Player.id == MatchStat.player_id)  # type: ignore
+            .join(Match, Match.id == MatchStat.match_id)  # type: ignore
+            .join(Class, Class.id == MatchStat.class_id)  # type: ignore
+            .outerjoin(MedicStat, MedicStat.matchstat_id == MatchStat.id)  # type: ignore
+            .where(Match.tournament_id == tournament_id)
+            .where(MatchStat.playtime >= min_playtime_seconds)
+            .where(func.lower(Class.name) == func.lower(class_name))
+        )
+        rows = (await db.execute(statement)).all()
+        if not rows:
+            return {}
+
+        benchmark_map = await RatingService.get_benchmark_map(db)
+        grouped_rows: dict[str, list[tuple[MatchStat, Optional[MedicStat]]]] = defaultdict(list)
+        for steamid, stat, medic in rows:
+            grouped_rows[str(steamid)].append((stat, medic))
+
+        result: dict[str, float] = {}
+        for steamid, player_rows in grouped_rows.items():
+            ratings = await RatingService.score_match_stat_rows(db, player_rows, benchmark_map=benchmark_map)
+            result[steamid] = round(sum(ratings) / len(ratings), 3) if ratings else 1.0
+        return result
 
 
 class LeaderboardService:
@@ -305,11 +615,11 @@ class PlayerService:
     @staticmethod
     def _build_match_level_rows(
         match_rows: Sequence[Any],
-        include_medic_bonus: bool,
+        row_ratings: Sequence[float],
     ) -> list[Dict[str, Any]]:
         by_match: Dict[int, Dict[str, Any]] = {}
 
-        for stat, match, medic in match_rows:
+        for idx, (stat, match, medic) in enumerate(match_rows):
             match_id = int(match.id or 0)
             if match_id not in by_match:
                 by_match[match_id] = {
@@ -328,6 +638,8 @@ class PlayerService:
                     "total_drops": 0,
                     "total_healing_done": 0,
                     "has_medic_stats": False,
+                    "rating_weighted_sum": 0.0,
+                    "rating_weight": 0.0,
                 }
 
             current = by_match[match_id]
@@ -344,9 +656,13 @@ class PlayerService:
                 current["total_drops"] += int(medic.drops or 0)
                 current["total_healing_done"] += int(medic.healing_done or 0)
 
+            stat_playtime = float(stat.playtime or 0)
+            row_rating = float(row_ratings[idx]) if idx < len(row_ratings) else 1.0
+            current["rating_weighted_sum"] += row_rating * stat_playtime
+            current["rating_weight"] += stat_playtime
+
         flattened = sorted(by_match.values(), key=lambda row: row["match_id"], reverse=True)
 
-        raw_ratings: list[float] = []
         for row in flattened:
             playtime_seconds = int(row["playtime_seconds"])
             dpm = PlayerService._safe_per_minute(row["damage_dealt"], playtime_seconds)
@@ -354,24 +670,8 @@ class PlayerService:
 
             row["dpm"] = round(dpm, 2)
             row["hpm"] = round(hpm, 2)
-            row["raw_rating"] = PlayerService._compute_rating_from_totals(
-                kills=row["kills"],
-                deaths=row["deaths"],
-                playtime_seconds=playtime_seconds,
-                dpm=dpm,
-                damage_dealt=row["damage_dealt"],
-                damage_received=row["damage_received"],
-                heals_received=row["heals_received"],
-                hpm=hpm,
-                ubers=row["total_ubers"],
-                drops=row["total_drops"],
-                include_medic_bonus=include_medic_bonus and bool(row["has_medic_stats"]),
-            )
-            raw_ratings.append(row["raw_rating"])
-
-        normalized = PlayerService._normalize_ratings(raw_ratings)
-        for idx, row in enumerate(flattened):
-            row["rating"] = normalized[idx] if idx < len(normalized) else 0.0
+            weight = float(row["rating_weight"])
+            row["rating"] = round((row["rating_weighted_sum"] / weight), 3) if weight > 0 else 1.0
 
         return flattened
 
@@ -452,7 +752,11 @@ class PlayerService:
         )
         match_rows = (await db.execute(match_rows_query)).all()
 
-        match_level_rows = PlayerService._build_match_level_rows(match_rows, include_medic_bonus=True)
+        benchmark_map = await RatingService.get_benchmark_map(db)
+        row_pairs = [(stat, medic) for stat, _match, medic in match_rows]
+        row_ratings = await RatingService.score_match_stat_rows(db, row_pairs, benchmark_map=benchmark_map)
+
+        match_level_rows = PlayerService._build_match_level_rows(match_rows, row_ratings=row_ratings)
         aggregate_stats = PlayerService._build_aggregate_stats(match_level_rows)
         match_entries = [PlayerService._to_player_match_entry(row) for row in match_level_rows]
 
@@ -492,10 +796,11 @@ class PlayerService:
         if not class_rows:
             raise ValueError(f"Player {steam_id} has no stats for class {class_id}")
 
-        match_level_rows = PlayerService._build_match_level_rows(
-            class_rows,
-            include_medic_bonus=(class_id == 6),
-        )
+        benchmark_map = await RatingService.get_benchmark_map(db)
+        row_pairs = [(stat, medic) for stat, _match, medic in class_rows]
+        row_ratings = await RatingService.score_match_stat_rows(db, row_pairs, benchmark_map=benchmark_map)
+
+        match_level_rows = PlayerService._build_match_level_rows(class_rows, row_ratings=row_ratings)
         aggregate_stats = PlayerService._build_aggregate_stats(match_level_rows)
 
         return PlayerClassAggregateResponse(
