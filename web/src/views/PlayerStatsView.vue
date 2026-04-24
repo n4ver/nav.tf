@@ -15,21 +15,59 @@ function decodeSteamId(value) {
 }
 
 const steamId = ref(decodeSteamId(route.params.steamId))
+const selectedClassId = ref(0)
+
+const tf2Classes = [
+  { id: 0, name: 'Scout' },
+  { id: 1, name: 'Soldier' },
+  { id: 2, name: 'Pyro' },
+  { id: 3, name: 'Demoman' },
+  { id: 4, name: 'Heavy' },
+  { id: 5, name: 'Engineer' },
+  { id: 6, name: 'Medic' },
+  { id: 7, name: 'Sniper' },
+  { id: 8, name: 'Spy' },
+]
+
 const playerSummary = ref(null)
 const playerLoading = ref(false)
 const playerError = ref('')
+
+const playerClassAggregate = ref(null)
+const classLoading = ref(false)
+const classError = ref('')
 
 async function loadPlayerSummary() {
   playerLoading.value = true
   playerError.value = ''
 
   try {
-    playerSummary.value = await fetchJson(`/players/${steamId.value}/summary`)
+    const encodedSteamId = encodeURIComponent(steamId.value)
+    playerSummary.value = await fetchJson(`/players/${encodedSteamId}/summary`)
   } catch (error) {
     playerSummary.value = null
     playerError.value = error instanceof Error ? error.message : 'Failed to load player summary'
   } finally {
     playerLoading.value = false
+  }
+}
+
+async function loadPlayerClassAggregate() {
+  if (!steamId.value) {
+    return
+  }
+
+  classLoading.value = true
+  classError.value = ''
+
+  try {
+    const encodedSteamId = encodeURIComponent(steamId.value)
+    playerClassAggregate.value = await fetchJson(`/player/${encodedSteamId}/${selectedClassId.value}`)
+  } catch (error) {
+    playerClassAggregate.value = null
+    classError.value = error instanceof Error ? error.message : 'Failed to load class aggregate'
+  } finally {
+    classLoading.value = false
   }
 }
 
@@ -44,6 +82,7 @@ async function submitAndLoad() {
   const encodedSteamId = encodeURIComponent(steamId.value)
   await router.replace(`/player/${encodedSteamId}`)
   await loadPlayerSummary()
+  await loadPlayerClassAggregate()
 }
 
 watch(
@@ -54,12 +93,24 @@ watch(
     }
     steamId.value = decodeSteamId(nextSteamId)
     await loadPlayerSummary()
+    await loadPlayerClassAggregate()
+  },
+)
+
+watch(
+  selectedClassId,
+  async () => {
+    if (!route.params.steamId) {
+      return
+    }
+    await loadPlayerClassAggregate()
   },
 )
 
 onMounted(async () => {
   if (route.params.steamId) {
     await loadPlayerSummary()
+    await loadPlayerClassAggregate()
   }
 })
 </script>
@@ -89,9 +140,6 @@ onMounted(async () => {
         <p v-if="playerLoading" class="status-msg">Loading player summary...</p>
 
         <div v-if="playerSummary && !playerLoading">
-          <p class="status-msg">
-            Classification: <strong>{{ playerSummary.ai_classification }}</strong>
-          </p>
           <p class="rating-chip">
             Average Rating: <strong>{{ formatRating(playerSummary.aggregate_stats.avg_rating) }}</strong>
           </p>
@@ -117,25 +165,31 @@ onMounted(async () => {
               </article>
 
               <article>
-                <h3>Class Breakdown</h3>
-                <table v-if="playerSummary.class_breakdown.length">
-                  <thead>
-                    <tr>
-                      <th>Class</th>
-                      <th>Avg DPM</th>
-                      <th>Kills</th>
-                      <th>Matches</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr v-for="row in playerSummary.class_breakdown" :key="row.class_name">
-                      <td>{{ row.class_name }}</td>
-                      <td>{{ row.avg_dpm }}</td>
-                      <td>{{ row.sum_kills }}</td>
-                      <td>{{ row.matches_played }}</td>
-                    </tr>
-                  </tbody>
-                </table>
+                <h3>Class Aggregate</h3>
+                <label>
+                  Class
+                  <select v-model.number="selectedClassId">
+                    <option v-for="tf2Class in tf2Classes" :key="tf2Class.id" :value="tf2Class.id">
+                      {{ tf2Class.name }}
+                    </option>
+                  </select>
+                </label>
+                <p v-if="classError" class="error-msg">{{ classError }}</p>
+                <p v-if="classLoading" class="status-msg">Loading class aggregate...</p>
+
+                <ul v-if="playerClassAggregate && !classLoading" class="stat-list">
+                  <li><strong>Class:</strong> {{ playerClassAggregate.class_name }}</li>
+                  <li><strong>Matches:</strong> {{ playerClassAggregate.aggregate_stats.matches_played }}</li>
+                  <li><strong>Avg Rating:</strong> {{ formatRating(playerClassAggregate.aggregate_stats.avg_rating) }}</li>
+                  <li><strong>Total Kills:</strong> {{ playerClassAggregate.aggregate_stats.total_kills }}</li>
+                  <li><strong>Total Deaths:</strong> {{ playerClassAggregate.aggregate_stats.total_deaths }}</li>
+                  <li><strong>Avg DPM:</strong> {{ playerClassAggregate.aggregate_stats.avg_dpm }}</li>
+                  <li><strong>Avg KDR:</strong> {{ playerClassAggregate.aggregate_stats.avg_kdr }}</li>
+                  <li><strong>Playtime (mins):</strong> {{ playerClassAggregate.aggregate_stats.total_playtime_mins }}</li>
+                  <li><strong>Damage Dealt:</strong> {{ playerClassAggregate.aggregate_stats.total_damage_dealt }}</li>
+                  <li><strong>Damage Received:</strong> {{ playerClassAggregate.aggregate_stats.total_damage_received }}</li>
+                  <li><strong>Heals Received:</strong> {{ playerClassAggregate.aggregate_stats.total_heals_received }}</li>
+                </ul>
               </article>
             </div>
 
@@ -145,17 +199,18 @@ onMounted(async () => {
                 <tr>
                   <th>Log ID</th>
                   <th>Map</th>
-                  <th>Class</th>
+                  <th>Team</th>
                   <th>K/D</th>
                   <th>DPM</th>
+                  <th>Rating</th>
                   <th>Playtime</th>
                   <th>Heals</th>
-                  <th>Ubers</th>
-                  <th>Drops</th>
+                  <th>Total Ubers</th>
+                  <th>Total Drops</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="match in playerSummary.matches" :key="`${match.match_id}-${match.class_name}`">
+                <tr v-for="match in playerSummary.matches" :key="match.match_id">
                   <td>
                     <RouterLink
                       class="inline-link mono"
@@ -165,13 +220,14 @@ onMounted(async () => {
                     </RouterLink>
                   </td>
                   <td>{{ match.map }}</td>
-                  <td>{{ match.class_name }}</td>
+                  <td>{{ match.team }}</td>
                   <td>{{ match.kills }}/{{ match.deaths }}</td>
                   <td>{{ match.dpm }}</td>
+                  <td>{{ formatRating(match.rating) }}</td>
                   <td>{{ match.playtime_mins }}m</td>
                   <td>{{ match.heals_received }}</td>
-                  <td>{{ match.ubers }}</td>
-                  <td>{{ match.drops }}</td>
+                  <td>{{ match.total_ubers }}</td>
+                  <td>{{ match.total_drops }}</td>
                 </tr>
               </tbody>
             </table>

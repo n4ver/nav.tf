@@ -384,3 +384,155 @@ def test_player_summary_includes_average_rating() -> None:
         assert payload["aggregate_stats"]["avg_rating"] > 0.0
     finally:
         main.app.dependency_overrides.clear()
+
+
+def test_player_summary_aggregates_multi_class_rows_into_single_match_entry() -> None:
+    test_client, session_factory = build_test_client_with_db()
+    try:
+        async def seed_data() -> None:
+            async with session_factory() as test_session:
+                tournament = Tournament(id=21, name="ETF2L")
+                test_session.add(tournament)
+
+                player = Player(steamid="steam_multiclass", last_known_name="Flex")
+                test_session.add(player)
+                await test_session.commit()
+                await test_session.refresh(player)
+
+                match = Match(log_id=41001, map="cp_sunshine", tournament_id=21)
+                test_session.add(match)
+                await test_session.commit()
+                await test_session.refresh(match)
+
+                # One match with two class rows should still become one match-level entry.
+                scout_row = MatchStat(
+                    match_id=match.id, # type: ignore[arg-type]
+                    player_id=player.id, # type: ignore[arg-type]
+                    class_id=0,
+                    team="Red",
+                    playtime=600,
+                    kills=12,
+                    deaths=5,
+                    dpm=300.0,
+                    primary_accuracy=42.0,
+                    damage_dealt=3000,
+                    damage_received=2200,
+                    heals_received=1600,
+                    headshots=0,
+                    backstabs=0,
+                    airshots=0,
+                    captures=1,
+                )
+                soldier_row = MatchStat(
+                    match_id=match.id, # type: ignore[arg-type]
+                    player_id=player.id, # type: ignore[arg-type]
+                    class_id=1,
+                    team="Red",
+                    playtime=600,
+                    kills=8,
+                    deaths=4,
+                    dpm=180.0,
+                    primary_accuracy=30.0,
+                    damage_dealt=1800,
+                    damage_received=1800,
+                    heals_received=1200,
+                    headshots=0,
+                    backstabs=0,
+                    airshots=2,
+                    captures=0,
+                )
+                test_session.add(scout_row)
+                test_session.add(soldier_row)
+                await test_session.commit()
+
+        asyncio.run(seed_data())
+
+        response = test_client.get("/players/steam_multiclass/summary")
+        assert response.status_code == 200
+
+        payload = response.json()
+        assert payload["aggregate_stats"]["matches_played"] == 1
+        assert len(payload["matches"]) == 1
+        assert payload["matches"][0]["kills"] == 20
+        assert payload["matches"][0]["deaths"] == 9
+        assert payload["matches"][0]["dpm"] == 240.0
+        assert "class_name" not in payload["matches"][0]
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_player_class_aggregate_endpoint_returns_class_specific_stats() -> None:
+    test_client, session_factory = build_test_client_with_db()
+    try:
+        async def seed_data() -> None:
+            async with session_factory() as test_session:
+                tournament = Tournament(id=22, name="RGL")
+                test_session.add(tournament)
+
+                player = Player(steamid="steam_scoutagg", last_known_name="ScoutMain")
+                test_session.add(player)
+                await test_session.commit()
+                await test_session.refresh(player)
+
+                match_1 = Match(log_id=42001, map="cp_badlands", tournament_id=22)
+                match_2 = Match(log_id=42002, map="cp_reckoner", tournament_id=22)
+                test_session.add(match_1)
+                test_session.add(match_2)
+                await test_session.commit()
+                await test_session.refresh(match_1)
+                await test_session.refresh(match_2)
+
+                stat_1 = MatchStat(
+                    match_id=match_1.id, # type: ignore[arg-type]
+                    player_id=player.id, # type: ignore[arg-type]
+                    class_id=0,
+                    team="Blue",
+                    playtime=900,
+                    kills=18,
+                    deaths=9,
+                    dpm=260.0,
+                    primary_accuracy=41.0,
+                    damage_dealt=3900,
+                    damage_received=2800,
+                    heals_received=2400,
+                    headshots=0,
+                    backstabs=0,
+                    airshots=0,
+                    captures=2,
+                )
+                stat_2 = MatchStat(
+                    match_id=match_2.id, # type: ignore[arg-type]
+                    player_id=player.id, # type: ignore[arg-type]
+                    class_id=0,
+                    team="Blue",
+                    playtime=960,
+                    kills=20,
+                    deaths=10,
+                    dpm=275.0,
+                    primary_accuracy=43.0,
+                    damage_dealt=4400,
+                    damage_received=3000,
+                    heals_received=2600,
+                    headshots=0,
+                    backstabs=0,
+                    airshots=0,
+                    captures=1,
+                )
+                test_session.add(stat_1)
+                test_session.add(stat_2)
+                await test_session.commit()
+
+        asyncio.run(seed_data())
+
+        response = test_client.get("/player/steam_scoutagg/0")
+        assert response.status_code == 200
+
+        payload = response.json()
+        assert payload["steamid"] == "steam_scoutagg"
+        assert payload["class_id"] == 0
+        assert payload["class_name"] == "Scout"
+        assert payload["aggregate_stats"]["matches_played"] == 2
+        assert payload["aggregate_stats"]["total_kills"] == 38
+        assert payload["aggregate_stats"]["avg_rating"] > 0.0
+    finally:
+        main.app.dependency_overrides.clear()

@@ -3,7 +3,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select, func, desc, asc
 from sqlalchemy import case
-from typing import List, Literal, Optional, Dict, Any
+from typing import List, Literal, Optional, Dict, Any, Sequence
 from models import Player, MatchStat, Match, Class, MedicStat, Tournament
 from schemas import (
     LeaderboardEntryResponse,
@@ -12,7 +12,7 @@ from schemas import (
     LogStatsSummary,
     MedicStatResponse,
     PlayerSummaryResponse,
-    PlayerClassBreakdown,
+    PlayerClassAggregateResponse,
     PlayerAggregateStats,
     PlayerMatchEntry,
 )
@@ -246,6 +246,38 @@ class PlayerService:
         return float(numerator or 0.0) / denom
 
     @staticmethod
+    def _compute_rating_from_totals(
+        kills: int,
+        deaths: int,
+        playtime_seconds: int,
+        dpm: float,
+        damage_dealt: int,
+        damage_received: int,
+        heals_received: int,
+        hpm: float,
+        ubers: int,
+        drops: int,
+        include_medic_bonus: bool,
+    ) -> float:
+        kills_pm = PlayerService._safe_per_minute(kills, playtime_seconds)
+        deaths_pm = PlayerService._safe_per_minute(deaths, playtime_seconds)
+        damage_efficiency = PlayerService._safe_ratio(damage_dealt, damage_received)
+        healing_efficiency = PlayerService._safe_ratio(damage_received, heals_received)
+
+        score = (
+            (kills_pm * 0.35)
+            + (float(dpm or 0.0) * 0.0025)
+            - (deaths_pm * 0.22)
+            + (damage_efficiency * 0.18)
+            - (healing_efficiency * 0.08)
+        )
+
+        if include_medic_bonus:
+            score += (float(hpm or 0.0) * 0.01) + (float(ubers or 0) * 0.06) - (float(drops or 0) * 0.08)
+
+        return score
+
+    @staticmethod
     def _quantile(sorted_vals: list[float], q: float) -> float:
         if not sorted_vals:
             return 0.0
@@ -256,32 +288,6 @@ class PlayerService:
         upper_idx = min(lower_idx + 1, len(sorted_vals) - 1)
         frac = idx - lower_idx
         return sorted_vals[lower_idx] * (1 - frac) + sorted_vals[upper_idx] * frac
-
-    @staticmethod
-    def _compute_match_rating(stat: MatchStat, medic: Optional[MedicStat]) -> float:
-        kills_pm = PlayerService._safe_per_minute(stat.kills, stat.playtime)
-        deaths_pm = PlayerService._safe_per_minute(stat.deaths, stat.playtime)
-        damage_efficiency = PlayerService._safe_ratio(stat.damage_dealt, stat.damage_received)
-        healing_efficiency = PlayerService._safe_ratio(stat.damage_received, stat.heals_received)
-
-        score = (
-            (kills_pm * 0.35)
-            + (float(stat.dpm or 0.0) * 0.0025)
-            - (deaths_pm * 0.22)
-            + (damage_efficiency * 0.18)
-            - (healing_efficiency * 0.08)
-        )
-
-        # Medic rows receive additional support credit from medic-specific stats.
-        if stat.class_id == 6 and medic is not None:
-            medic_support = (
-                float(medic.hpm or 0.0) * 0.01
-                + float(medic.ubers or 0) * 0.06
-                - float(medic.drops or 0) * 0.08
-            )
-            score += medic_support
-
-        return score
 
     @staticmethod
     def _normalize_ratings(raw_scores: list[float]) -> list[float]:
@@ -295,114 +301,207 @@ class PlayerService:
 
         normalized = [0.6 + ((score - p05) / denom) * 0.8 for score in raw_scores]
         return [round(max(0.0, min(2.0, value)), 3) for value in normalized]
+
+    @staticmethod
+    def _build_match_level_rows(
+        match_rows: Sequence[Any],
+        include_medic_bonus: bool,
+    ) -> list[Dict[str, Any]]:
+        by_match: Dict[int, Dict[str, Any]] = {}
+
+        for stat, match, medic in match_rows:
+            match_id = int(match.id or 0)
+            if match_id not in by_match:
+                by_match[match_id] = {
+                    "match_id": match_id,
+                    "log_id": int(match.log_id or 0),
+                    "map": match.map,
+                    "tournament_id": int(match.tournament_id or 0),
+                    "team": stat.team,
+                    "playtime_seconds": 0,
+                    "kills": 0,
+                    "deaths": 0,
+                    "damage_dealt": 0,
+                    "damage_received": 0,
+                    "heals_received": 0,
+                    "total_ubers": 0,
+                    "total_drops": 0,
+                    "total_healing_done": 0,
+                    "has_medic_stats": False,
+                }
+
+            current = by_match[match_id]
+            current["playtime_seconds"] += int(stat.playtime or 0)
+            current["kills"] += int(stat.kills or 0)
+            current["deaths"] += int(stat.deaths or 0)
+            current["damage_dealt"] += int(stat.damage_dealt or 0)
+            current["damage_received"] += int(stat.damage_received or 0)
+            current["heals_received"] += int(stat.heals_received or 0)
+
+            if medic is not None:
+                current["has_medic_stats"] = True
+                current["total_ubers"] += int(medic.ubers or 0)
+                current["total_drops"] += int(medic.drops or 0)
+                current["total_healing_done"] += int(medic.healing_done or 0)
+
+        flattened = sorted(by_match.values(), key=lambda row: row["match_id"], reverse=True)
+
+        raw_ratings: list[float] = []
+        for row in flattened:
+            playtime_seconds = int(row["playtime_seconds"])
+            dpm = PlayerService._safe_per_minute(row["damage_dealt"], playtime_seconds)
+            hpm = PlayerService._safe_per_minute(row["total_healing_done"], playtime_seconds)
+
+            row["dpm"] = round(dpm, 2)
+            row["hpm"] = round(hpm, 2)
+            row["raw_rating"] = PlayerService._compute_rating_from_totals(
+                kills=row["kills"],
+                deaths=row["deaths"],
+                playtime_seconds=playtime_seconds,
+                dpm=dpm,
+                damage_dealt=row["damage_dealt"],
+                damage_received=row["damage_received"],
+                heals_received=row["heals_received"],
+                hpm=hpm,
+                ubers=row["total_ubers"],
+                drops=row["total_drops"],
+                include_medic_bonus=include_medic_bonus and bool(row["has_medic_stats"]),
+            )
+            raw_ratings.append(row["raw_rating"])
+
+        normalized = PlayerService._normalize_ratings(raw_ratings)
+        for idx, row in enumerate(flattened):
+            row["rating"] = normalized[idx] if idx < len(normalized) else 0.0
+
+        return flattened
+
+    @staticmethod
+    def _build_aggregate_stats(match_rows: list[Dict[str, Any]]) -> PlayerAggregateStats:
+        if not match_rows:
+            return PlayerAggregateStats(
+                matches_played=0,
+                avg_rating=0.0,
+                total_kills=0,
+                total_deaths=0,
+                total_playtime_mins=0,
+                avg_dpm=0.0,
+                avg_kdr=0.0,
+                total_damage_dealt=0,
+                total_damage_received=0,
+                total_heals_received=0,
+            )
+
+        total_kills = sum(int(row["kills"]) for row in match_rows)
+        total_deaths = sum(int(row["deaths"]) for row in match_rows)
+        total_playtime_seconds = sum(int(row["playtime_seconds"]) for row in match_rows)
+        total_damage_dealt = sum(int(row["damage_dealt"]) for row in match_rows)
+        total_damage_received = sum(int(row["damage_received"]) for row in match_rows)
+        total_heals_received = sum(int(row["heals_received"]) for row in match_rows)
+        avg_dpm = round(sum(float(row["dpm"]) for row in match_rows) / len(match_rows), 2)
+        avg_rating = round(sum(float(row["rating"]) for row in match_rows) / len(match_rows), 3)
+        avg_kdr = round(total_kills / total_deaths, 2) if total_deaths else round(float(total_kills), 2)
+
+        return PlayerAggregateStats(
+            matches_played=len(match_rows),
+            avg_rating=avg_rating,
+            total_kills=total_kills,
+            total_deaths=total_deaths,
+            total_playtime_mins=total_playtime_seconds // 60,
+            avg_dpm=avg_dpm,
+            avg_kdr=avg_kdr,
+            total_damage_dealt=total_damage_dealt,
+            total_damage_received=total_damage_received,
+            total_heals_received=total_heals_received,
+        )
+
+    @staticmethod
+    def _to_player_match_entry(match_row: Dict[str, Any]) -> PlayerMatchEntry:
+        return PlayerMatchEntry(
+            match_id=int(match_row["match_id"]),
+            log_id=int(match_row["log_id"]),
+            map=match_row["map"],
+            tournament_id=int(match_row["tournament_id"]),
+            team=match_row["team"],
+            playtime_mins=int(match_row["playtime_seconds"]) // 60,
+            kills=int(match_row["kills"]),
+            deaths=int(match_row["deaths"]),
+            dpm=float(match_row["dpm"]),
+            damage_dealt=int(match_row["damage_dealt"]),
+            damage_received=int(match_row["damage_received"]),
+            heals_received=int(match_row["heals_received"]),
+            total_ubers=int(match_row["total_ubers"]),
+            total_drops=int(match_row["total_drops"]),
+            hpm=float(match_row["hpm"]),
+            rating=float(match_row["rating"]),
+        )
     
     @staticmethod
     async def get_player_summary(db: AsyncSession, steam_id: str) -> PlayerSummaryResponse:
-        """Get aggregate stats for a player across all matches."""
+        """Get match-level aggregate stats for a player across all matches."""
         result = await db.execute(select(Player).where(Player.steamid == steam_id))
         player = result.scalars().first()
         if not player:
             raise ValueError(f"Player {steam_id} not found")
 
         match_rows_query = (
-            select(MatchStat, Match, Class, MedicStat)
+            select(MatchStat, Match, MedicStat)
             .join(Match, Match.id == MatchStat.match_id)  # type: ignore
-            .join(Class, Class.id == MatchStat.class_id)  # type: ignore
             .outerjoin(MedicStat, MedicStat.matchstat_id == MatchStat.id)  # type: ignore
             .where(MatchStat.player_id == player.id)
             .order_by(desc(Match.id))
         )
         match_rows = (await db.execute(match_rows_query)).all()
 
-        total_kills = 0
-        total_deaths = 0
-        total_playtime = 0
-        total_dpm = 0.0
-        total_damage_dealt = 0
-        total_damage_received = 0
-        total_heals_received = 0
-        match_rating_raw: List[float] = []
-        match_entries: List[PlayerMatchEntry] = []
-
-        for stat, match, player_class, medic in match_rows:
-            total_kills += int(stat.kills or 0)
-            total_deaths += int(stat.deaths or 0)
-            total_playtime += int(stat.playtime or 0)
-            total_dpm += float(stat.dpm or 0)
-            total_damage_dealt += int(stat.damage_dealt or 0)
-            total_damage_received += int(stat.damage_received or 0)
-            total_heals_received += int(stat.heals_received or 0)
-            match_rating_raw.append(PlayerService._compute_match_rating(stat, medic))
-
-            match_entries.append(
-                PlayerMatchEntry(
-                    match_id=int(match.id or 0),
-                    log_id=int(match.log_id or 0),
-                    map=match.map,
-                    tournament_id=int(match.tournament_id or 0),
-                    class_name=player_class.name,
-                    team=stat.team,
-                    playtime_mins=int((stat.playtime or 0) // 60),
-                    kills=int(stat.kills or 0),
-                    deaths=int(stat.deaths or 0),
-                    dpm=round(float(stat.dpm or 0), 2),
-                    damage_dealt=int(stat.damage_dealt or 0),
-                    damage_received=int(stat.damage_received or 0),
-                    heals_received=int(stat.heals_received or 0),
-                    ubers=int(medic.ubers or 0) if medic else 0,
-                    drops=int(medic.drops or 0) if medic else 0,
-                    hpm=round(float(medic.hpm or 0), 2) if medic else 0.0,
-                )
-            )
-
-        matches_played = len(match_rows)
-        avg_dpm = round(total_dpm / matches_played, 2) if matches_played else 0.0
-        avg_kdr = round(total_kills / total_deaths, 2) if total_deaths else round(float(total_kills), 2)
-        match_ratings = PlayerService._normalize_ratings(match_rating_raw)
-        avg_rating = round(sum(match_ratings) / len(match_ratings), 3) if match_ratings else 0.0
-
-        class_table = Class.__table__  # type: ignore[attr-defined]
-        stat_table = MatchStat.__table__  # type: ignore[attr-defined]
-
-        stats_query = (
-            select(
-                class_table.c.name.label("class_name"),
-                func.avg(stat_table.c.dpm).label("avg_dpm"),
-                func.sum(stat_table.c.kills).label("sum_kills"),
-                func.count(stat_table.c.id).label("matches_played"),
-            )
-                .select_from(stat_table.join(class_table, class_table.c.id == stat_table.c.class_id))  # type: ignore
-            .where(stat_table.c.player_id == player.id)
-            .group_by(class_table.c.id, class_table.c.name)
-        )
-        
-        breakdown_rows = (await db.execute(stats_query)).all()
-
-        class_breakdown = [
-            PlayerClassBreakdown(
-                class_name=class_name,
-                avg_dpm=round(float(avg_dpm or 0), 2),
-                sum_kills=int(sum_kills or 0),
-                matches_played=int(matches_played or 0),
-            )
-            for class_name, avg_dpm, sum_kills, matches_played in breakdown_rows
-        ]
+        match_level_rows = PlayerService._build_match_level_rows(match_rows, include_medic_bonus=True)
+        aggregate_stats = PlayerService._build_aggregate_stats(match_level_rows)
+        match_entries = [PlayerService._to_player_match_entry(row) for row in match_level_rows]
 
         return PlayerSummaryResponse(
             steamid=steam_id,
             player_name=player.last_known_name,
-            aggregate_stats=PlayerAggregateStats(
-                matches_played=matches_played,
-                avg_rating=avg_rating,
-                total_kills=total_kills,
-                total_deaths=total_deaths,
-                total_playtime_mins=total_playtime // 60,
-                avg_dpm=avg_dpm,
-                avg_kdr=avg_kdr,
-                total_damage_dealt=total_damage_dealt,
-                total_damage_received=total_damage_received,
-                total_heals_received=total_heals_received,
-            ),
-            class_breakdown=class_breakdown,
+            aggregate_stats=aggregate_stats,
             matches=match_entries,
+        )
+
+    @staticmethod
+    async def get_player_class_aggregate(
+        db: AsyncSession,
+        steam_id: str,
+        class_id: int,
+    ) -> PlayerClassAggregateResponse:
+        """Get class-specific aggregate stats, including rating, for a player."""
+        player_result = await db.execute(select(Player).where(Player.steamid == steam_id))
+        player = player_result.scalars().first()
+        if not player:
+            raise ValueError(f"Player {steam_id} not found")
+
+        class_result = await db.execute(select(Class).where(Class.id == class_id))
+        player_class = class_result.scalars().first()
+        if not player_class:
+            raise ValueError(f"Class {class_id} not found")
+
+        class_rows_query = (
+            select(MatchStat, Match, MedicStat)
+            .join(Match, Match.id == MatchStat.match_id)  # type: ignore
+            .outerjoin(MedicStat, MedicStat.matchstat_id == MatchStat.id)  # type: ignore
+            .where(MatchStat.player_id == player.id)
+            .where(MatchStat.class_id == class_id)
+            .order_by(desc(Match.id))
+        )
+        class_rows = (await db.execute(class_rows_query)).all()
+        if not class_rows:
+            raise ValueError(f"Player {steam_id} has no stats for class {class_id}")
+
+        match_level_rows = PlayerService._build_match_level_rows(
+            class_rows,
+            include_medic_bonus=(class_id == 6),
+        )
+        aggregate_stats = PlayerService._build_aggregate_stats(match_level_rows)
+
+        return PlayerClassAggregateResponse(
+            steamid=steam_id,
+            player_name=player.last_known_name,
+            class_id=class_id,
+            class_name=player_class.name,
+            aggregate_stats=aggregate_stats,
         )

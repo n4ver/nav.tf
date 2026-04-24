@@ -372,3 +372,19 @@ async def get_player_summary(steam_id: str, db: AsyncSession = Depends(get_sessi
         logger.error(f"Failed to fetch player summary: {exc}")
         raise HTTPException(status_code=500, detail="Failed to fetch player summary")
 
+
+@app.get("/player/{steam_id}/{class_id}", tags=["players"])
+async def get_player_class_aggregate(
+    steam_id: str,
+    class_id: int,
+    db: AsyncSession = Depends(get_session),
+):
+    """Get aggregate statistics for a player on a specific class."""
+    try:
+        return await PlayerService.get_player_class_aggregate(db, steam_id, class_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"Failed to fetch player class aggregate: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to fetch player class aggregate")
+

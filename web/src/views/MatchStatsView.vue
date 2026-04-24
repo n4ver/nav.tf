@@ -140,6 +140,70 @@ onMounted(async () => {
     <main class="content-grid">
       <section class="panel">
         <div class="panel-head">
+          <h2>Log Stats</h2>
+          <form @submit.prevent="submitAndLoad">
+            <label>
+              Log ID
+              <input v-model.number="logId" type="number" min="1" required />
+            </label>
+            <button type="submit" :disabled="logLoading">Fetch</button>
+          </form>
+        </div>
+
+        <p v-if="logError" class="error-msg">{{ logError }}</p>
+        <p v-if="logLoading" class="status-msg">Loading log stats...</p>
+
+        <div v-if="logStats && !logLoading" class="log-grid">
+          <div>
+            <h3>Summary</h3>
+            <ul class="stat-list">
+              <li><strong>Map:</strong> {{ logStats.map }}</li>
+              <li><strong>Entries:</strong> {{ logStats.summary.entries }}</li>
+              <li><strong>Total Kills:</strong> {{ logStats.summary.total_kills }}</li>
+              <li><strong>Average DPM:</strong> {{ logStats.summary.avg_dpm }}</li>
+            </ul>
+          </div>
+          <div>
+            <h3>Players</h3>
+            <table v-if="logStats.stats.length">
+              <thead>
+                <tr>
+                  <th>Player</th>
+                  <th>SteamID</th>
+                  <th>Class</th>
+                  <th>K/D</th>
+                  <th>DPM</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="entry in logStats.stats" :key="`${entry.steamid}-${entry.class}`">
+                  <td>
+                    <RouterLink
+                      class="inline-link"
+                      :to="playerPath(entry.steamid)"
+                    >
+                      {{ entry.player_name }}
+                    </RouterLink>
+                  </td>
+                  <td>
+                    <RouterLink
+                      class="inline-link mono"
+                      :to="playerPath(entry.steamid)"
+                    >
+                      {{ entry.steamid }}
+                    </RouterLink>
+                  </td>
+                  <td>{{ entry.class }}</td>
+                  <td>{{ entry.kills }}/{{ entry.deaths }}</td>
+                  <td>{{ entry.dpm }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
           <h2>All Matches</h2>
           <p class="status-msg">Showing {{ matches.length }} of {{ matchesTotal }} total matches</p>
         </div>
@@ -186,71 +250,6 @@ onMounted(async () => {
           >
             Next
           </button>
-        </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Log Stats</h2>
-          <form @submit.prevent="submitAndLoad">
-            <label>
-              Log ID
-              <input v-model.number="logId" type="number" min="1" required />
-            </label>
-            <button type="submit" :disabled="logLoading">Fetch</button>
-          </form>
-        </div>
-
-        <p v-if="logError" class="error-msg">{{ logError }}</p>
-        <p v-if="logLoading" class="status-msg">Loading log stats...</p>
-
-        <div v-if="logStats && !logLoading" class="log-grid">
-          <div>
-            <h3>Summary</h3>
-            <ul class="stat-list">
-              <li><strong>Map:</strong> {{ logStats.map }}</li>
-              <li><strong>Entries:</strong> {{ logStats.summary.entries }}</li>
-              <li><strong>Total Kills:</strong> {{ logStats.summary.total_kills }}</li>
-              <li><strong>Average DPM:</strong> {{ logStats.summary.avg_dpm }}</li>
-            </ul>
-          </div>
-          <div>
-            <h3>Top Performers</h3>
-            <table v-if="logStats.stats.length">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>SteamID</th>
-                  <th>Class</th>
-                  <th>K/D</th>
-                  <th>DPM</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="entry in logStats.stats.slice(0, 8)" :key="`${entry.steamid}-${entry.class}`">
-                  <td>
-                    <RouterLink
-                      class="inline-link"
-                      :to="playerPath(entry.steamid)"
-                    >
-                      {{ entry.player_name }}
-                    </RouterLink>
-                  </td>
-                  <td>
-                    <RouterLink
-                      class="inline-link mono"
-                      :to="playerPath(entry.steamid)"
-                    >
-                      {{ entry.steamid }}
-                    </RouterLink>
-                  </td>
-                  <td>{{ entry.class }}</td>
-                  <td>{{ entry.kills }}/{{ entry.deaths }}</td>
-                  <td>{{ entry.dpm }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
         </div>
       </section>
     </main>

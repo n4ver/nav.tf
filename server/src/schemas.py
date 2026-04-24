@@ -58,13 +58,6 @@ class LogStatsResponse(BaseModel):
     stats: List[LogStatEntry]
 
 
-class PlayerClassBreakdown(BaseModel):
-    class_name: str
-    avg_dpm: float
-    sum_kills: int
-    matches_played: int
-
-
 class PlayerAggregateStats(BaseModel):
     matches_played: int
     avg_rating: float
@@ -83,7 +76,6 @@ class PlayerMatchEntry(BaseModel):
     log_id: int
     map: str
     tournament_id: int
-    class_name: str
     team: str
     playtime_mins: int
     kills: int
@@ -92,17 +84,25 @@ class PlayerMatchEntry(BaseModel):
     damage_dealt: int
     damage_received: int
     heals_received: int
-    ubers: int
-    drops: int
+    total_ubers: int
+    total_drops: int
     hpm: float
+    rating: float
 
 
 class PlayerSummaryResponse(BaseModel):
     steamid: str
     player_name: Optional[str]
     aggregate_stats: PlayerAggregateStats
-    class_breakdown: List[PlayerClassBreakdown]
     matches: List[PlayerMatchEntry]
+
+
+class PlayerClassAggregateResponse(BaseModel):
+    steamid: str
+    player_name: Optional[str]
+    class_id: int
+    class_name: str
+    aggregate_stats: PlayerAggregateStats
 
 
 class JobStatus(BaseModel):
