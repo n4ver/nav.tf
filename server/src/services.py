@@ -350,6 +350,11 @@ class LeaderboardService:
         avg_deaths_expr = func.avg(MatchStat.deaths).label("avg_deaths")
         avg_dpm_expr = func.avg(MatchStat.dpm).label("avg_dpm")
         total_playtime_expr = func.sum(MatchStat.playtime).label("total_playtime")
+        total_kills_expr = func.sum(MatchStat.kills)
+        total_deaths_expr = func.sum(MatchStat.deaths)
+        total_damage_dealt_expr = func.sum(MatchStat.damage_dealt)
+        total_damage_received_expr = func.sum(MatchStat.damage_received)
+        total_heals_received_expr = func.sum(MatchStat.heals_received)
         avg_heals_expr = func.avg(MatchStat.heals_received).label("avg_heals")
         total_healing_done_expr = func.sum(func.coalesce(MedicStat.healing_done, 0)).label("total_healing_done")
         total_ubers_expr = func.sum(func.coalesce(MedicStat.ubers, 0)).label("total_ubers")
@@ -363,32 +368,38 @@ class LeaderboardService:
             0,
         ).label("avg_hpm")
 
-        minutes_expr = func.nullif(MatchStat.playtime / 60.0, 0)
-        kills_pm_expr = func.coalesce(MatchStat.kills / minutes_expr, 0.0)
-        deaths_pm_expr = func.coalesce(MatchStat.deaths / minutes_expr, 0.0)
-        damage_efficiency_expr = func.coalesce(MatchStat.damage_dealt / func.nullif(MatchStat.damage_received, 0), 0.0)
-        healing_efficiency_expr = func.coalesce(MatchStat.damage_received / func.nullif(MatchStat.heals_received, 0), 0.0)
+        minutes_expr = func.nullif(total_playtime_expr / 60.0, 0)
+        kills_pm_expr = func.coalesce(total_kills_expr / minutes_expr, 0.0)
+        deaths_pm_expr = func.coalesce(total_deaths_expr / minutes_expr, 0.0)
+        dpm_expr = func.coalesce(total_damage_dealt_expr / minutes_expr, 0.0)
+        damage_efficiency_expr = func.coalesce(
+            total_damage_dealt_expr / func.nullif(total_damage_received_expr, 0),
+            0.0,
+        )
+        healing_efficiency_expr = func.coalesce(
+            total_damage_received_expr / func.nullif(total_heals_received_expr, 0),
+            0.0,
+        )
 
         base_rating_expr = (
             (kills_pm_expr * 0.35)
-            + (MatchStat.dpm * 0.0025)
+            + (dpm_expr * 0.0025)
             - (deaths_pm_expr * 0.22)
             + (damage_efficiency_expr * 0.18)
             - (healing_efficiency_expr * 0.08)
         )
 
         medic_bonus_expr = (
-            (func.coalesce(MedicStat.hpm, 0.0) * 0.01)
-            + (func.coalesce(MedicStat.ubers, 0) * 0.06)
-            - (func.coalesce(MedicStat.drops, 0) * 0.08)
+            (avg_hpm_expr * 0.01)
+            + (func.coalesce(total_ubers_expr, 0) * 0.06)
+            - (func.coalesce(total_drops_expr, 0) * 0.08)
         )
 
-        stat_table = MatchStat.__table__  # type: ignore[attr-defined]
-        per_row_rating_expr = case(
-            (stat_table.c.class_id == 6, base_rating_expr + medic_bonus_expr),
+        class_table = Class.__table__  # type: ignore[attr-defined]
+        avg_rating_expr = case(
+            (class_table.c.id == 6, base_rating_expr + medic_bonus_expr),
             else_=base_rating_expr,
-        )
-        avg_rating_expr = func.avg(per_row_rating_expr).label("avg_rating")
+        ).label("avg_rating")
 
         statement = (
             select(
@@ -458,7 +469,7 @@ class LeaderboardService:
             name=row.last_known_name,
             steamid=row.steamid,
             class_name=row.name, # type: ignore
-            avg_rating=round(float(row.avg_rating), 3),
+            avg_rating=round(float(row.avg_rating), 2),
             avg_dpm=round(float(row.avg_dpm), 2),
             avg_hpm=round(float(row.avg_hpm), 2),
             avg_kad=round(float(row.avg_kad), 2),
