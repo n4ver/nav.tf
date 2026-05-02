@@ -9,14 +9,15 @@ BASE_URL = "http://localhost:8000/logs"
 TOURNAMENT_MAP = {
     "invite": 1,
     "qualifiers": 2,
-    "R8": 3,
-    "R7": 4,
-    "R6": 5,
-    "R5": 6,
-    "R4": 7,
-    "R3": 8,
-    "R2": 9,
-    "R1": 10,
+    "R8": 2,
+    "R7": 2,
+    "R6": 2,
+    "R5": 2,
+    "R4": 2,
+    "R3": 2,
+    "R2": 2,
+    "R1": 2,
+    "main": 3
 }
 
 def parse_invite_file(filepath: str) -> list[tuple[int, int]]:
@@ -32,18 +33,16 @@ def parse_invite_file(filepath: str) -> list[tuple[int, int]]:
             
             # Check if this is a section header
             if line in TOURNAMENT_MAP:
-                continue
+                tournament_id = TOURNAMENT_MAP[line]
             
             # Extract log ID from full URL or just numeric ID
             if line.startswith("http://"):
                 match = re.search(r'/ingest/(\d+)', line)
                 if match:
                     log_id = int(match.group(1))
-                    tournament_id = 1
                     logs.append((log_id, tournament_id))
             elif line.isdigit():
                 log_id = int(line)
-                tournament_id = 1
                 logs.append((log_id, tournament_id))
     
     return logs
