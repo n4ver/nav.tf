@@ -94,12 +94,16 @@ R1
 
 invite
 
-http://127.0.0.1:8000/logs/ingest/4040423?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4040434?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4040444?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4040457?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4040439?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4043780?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4043772?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4042870?tournament_id=1
-http://127.0.0.1:8000/logs/ingest/4042874?tournament_id=1
+4040423
+4040434
+4040444
+4040457
+4040439
+4043780
+4043772
+4042870
+4042874
+4047090
+4047111
+4049279
+4049287
