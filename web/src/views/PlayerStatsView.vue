@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+// import { convertSteamID3toSteamID64, createSteamURL } from '../helper'
 import { fetchJson } from '../api'
 
 const route = useRoute()
@@ -12,6 +13,22 @@ function decodeSteamId(value) {
   } catch {
     return String(value || '')
   }
+}
+
+function convertSteamID3toSteamID64(steamid) {
+    const steamNumber = 76561197960265728n; // Magic number to add to account number for conversion
+    const regex = /^\[U:\d:(\d+)\]$/;
+    const match = steamid.match(regex);
+
+    if (!match) return null;
+
+    const accountId = BigInt(match[1]);
+    const steam64 = accountId + steamNumber;
+    return steam64.toString();
+}
+
+function createSteamURL(steamid64) {
+    return "https://steamcommunity.com/profiles/" + steamid64;
 }
 
 const steamId = ref(decodeSteamId(route.params.steamId))
@@ -143,9 +160,9 @@ onMounted(async () => {
           <p class="rating-chip">
             Average Rating: <strong>{{ formatRating(playerSummary.aggregate_stats.avg_rating) }}</strong>
           </p>
-            <p>
-              <strong>{{ playerSummary.player_name || steamId }}</strong>
-            </p>
+            <h2>
+              <strong><a :href="createSteamURL(convertSteamID3toSteamID64(steamId))">{{ playerSummary.player_name || steamId }}</a></strong>
+            </h2>
 
             <div class="split">
               <article>
