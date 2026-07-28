@@ -1,130 +1,144 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { fetchJson } from '../api'
+import { storeToRefs } from 'pinia'
+import MatchSummaryCard from '../components/MatchSummaryCard.vue'
+import { useMatchQueryStore } from '../stores/matchQuery'
+import { formatRating, ratingTone } from '../utils/rating'
+import { formatPlayerLabel } from '../utils/steam'
 
 const route = useRoute()
 const router = useRouter()
+const matchQuery = useMatchQueryStore()
 
-const logId = ref(Number(route.params.logId) || 123456)
-const logStats = ref(null)
-const logLoading = ref(false)
-const logError = ref('')
+const {
+  matches,
+  matchesPage,
+  matchesHasMore,
+  matchesLoading,
+  matchesError,
+  matchSummary,
+  matchPlayers,
+  matchDetailLoading,
+  matchDetailError,
+} = storeToRefs(matchQuery)
 
-const matches = ref([])
-const matchesTotal = ref(0)
-const matchesPage = ref(1)
-const matchesPageSize = 20
-const matchesLoading = ref(false)
-const matchesError = ref('')
+const activeMatchId = computed(() => {
+  const raw = route.params.matchId
+  return raw ? String(raw) : ''
+})
 
-function clampPage(page) {
-  return Math.max(1, Number(page) || 1)
-}
-
-function logPath(nextLogId) {
-  return `/match/${encodeURIComponent(String(nextLogId))}`
-}
-
-function formatTournamentName(match) {
-  if (match.tournament?.name) {
-    return `${match.tournament.name} (#${match.tournament_id})`
-  }
-  return `Tournament #${match.tournament_id}`
-}
-
-async function loadMatches() {
-  matchesLoading.value = true
-  matchesError.value = ''
-
-  try {
-    const offset = (matchesPage.value - 1) * matchesPageSize
-    const payload = await fetchJson(`/matches?limit=${matchesPageSize}&offset=${offset}`)
-    matches.value = Array.isArray(payload.items) ? payload.items : []
-    matchesTotal.value = Number(payload.total) || 0
-  } catch (error) {
-    matches.value = []
-    matchesTotal.value = 0
-    matchesError.value = error instanceof Error ? error.message : 'Failed to load matches'
-  } finally {
-    matchesLoading.value = false
-  }
-}
-
-const totalPages = () => Math.max(1, Math.ceil(matchesTotal.value / matchesPageSize))
-
-async function goToPage(nextPage) {
-  const safePage = Math.min(clampPage(nextPage), totalPages())
-  if (safePage === matchesPage.value) {
-    return
-  }
-
-  await router.replace({
-    name: 'match-stats',
-    params: route.params.logId ? { logId: String(route.params.logId) } : {},
-    query: { ...route.query, page: String(safePage) },
-  })
+function matchPath(matchId) {
+  return `/match/${encodeURIComponent(String(matchId))}`
 }
 
 function playerPath(steamId) {
   return `/player/${encodeURIComponent(String(steamId))}`
 }
 
-async function loadLogStats() {
-  logLoading.value = true
-  logError.value = ''
+function formatDuration(seconds) {
+  const total = Number(seconds) || 0
+  const mins = Math.floor(total / 60)
+  const secs = total % 60
+  return `${mins}m ${String(secs).padStart(2, '0')}s`
+}
 
+function formatDate(value) {
+  if (!value) return '—'
   try {
-    logStats.value = await fetchJson(`/logs/${logId.value}/stats`)
-  } catch (error) {
-    logStats.value = null
-    logError.value = error instanceof Error ? error.message : 'Failed to load log stats'
-  } finally {
-    logLoading.value = false
+    return new Date(value).toLocaleString()
+  } catch {
+    return String(value)
   }
 }
 
-async function submitAndLoad() {
+function classesLabel(classesPlayed) {
+  if (!Array.isArray(classesPlayed) || !classesPlayed.length) return '—'
+  return classesPlayed.join(', ')
+}
+
+function sortByRatingDesc(players) {
+  return [...players].sort((a, b) => (Number(b.rating) || 0) - (Number(a.rating) || 0))
+}
+
+const bluPlayers = computed(() =>
+  sortByRatingDesc(matchPlayers.value.filter((p) => String(p.team || '').toLowerCase() === 'blu')),
+)
+
+const redPlayers = computed(() =>
+  sortByRatingDesc(matchPlayers.value.filter((p) => String(p.team || '').toLowerCase() === 'red')),
+)
+
+const otherPlayers = computed(() =>
+  sortByRatingDesc(
+    matchPlayers.value.filter((p) => {
+      const team = String(p.team || '').toLowerCase()
+      return team !== 'blu' && team !== 'red'
+    }),
+  ),
+)
+
+const teamSections = computed(() => {
+  const sections = []
+  if (bluPlayers.value.length) {
+    sections.push({ key: 'blu', title: 'Blu', players: bluPlayers.value })
+  }
+  if (redPlayers.value.length) {
+    sections.push({ key: 'red', title: 'Red', players: redPlayers.value })
+  }
+  if (otherPlayers.value.length) {
+    sections.push({ key: 'other', title: 'Other', players: otherPlayers.value })
+  }
+  return sections
+})
+
+async function goToPage(nextPage) {
+  const safePage = Math.max(1, Number(nextPage) || 1)
+  if (safePage === matchesPage.value) {
+    return
+  }
+
   await router.replace({
     name: 'match-stats',
-    params: { logId: String(logId.value) },
+    params: activeMatchId.value ? { matchId: activeMatchId.value } : {},
+    query: { ...route.query, page: String(safePage) },
+  })
+}
+
+async function openMatch(matchId) {
+  await router.push({
+    name: 'match-stats',
+    params: { matchId: String(matchId) },
     query: route.query,
   })
-  await loadLogStats()
 }
 
 watch(
   () => route.query.page,
   async (nextPage) => {
-    const parsed = clampPage(nextPage)
-    if (parsed !== matchesPage.value) {
-      matchesPage.value = parsed
-      await loadMatches()
+    const parsed = Math.max(1, Number(nextPage) || 1)
+    if (parsed !== matchesPage.value || !matches.value.length) {
+      await matchQuery.loadMatches({ page: parsed })
     }
   },
 )
 
 watch(
-  () => route.params.logId,
-  async (nextLogId) => {
-    if (!nextLogId) {
+  () => route.params.matchId,
+  async (nextId) => {
+    if (!nextId) {
+      matchQuery.clearMatchDetail()
       return
     }
-    const parsed = Number(nextLogId)
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      return
-    }
-    logId.value = parsed
-    await loadLogStats()
+    await matchQuery.loadMatchDetail(String(nextId))
   },
 )
 
 onMounted(async () => {
-  matchesPage.value = clampPage(route.query.page)
-  await loadMatches()
-
-  if (route.params.logId) {
-    await loadLogStats()
+  const page = Math.max(1, Number(route.query.page) || 1)
+  await matchQuery.loadMatches({ page })
+  if (route.params.matchId) {
+    await matchQuery.loadMatchDetail(String(route.params.matchId))
   }
 })
 </script>
@@ -133,119 +147,145 @@ onMounted(async () => {
   <div class="page-wrap">
     <header class="hero">
       <p class="eyebrow">TF2 analytics dashboard</p>
-      <h1>Match Statistics</h1>
-      <p>Look up a specific log and inspect detailed match metrics.</p>
+      <h1>Match Dashboard</h1>
+      <p>Browse matches and player ratings. Log uploads are available to admins.</p>
     </header>
 
-    <main class="content-grid">
+    <main class="content-grid space-y-4">
       <section class="panel">
         <div class="panel-head">
-          <h2>Log Stats</h2>
-          <form @submit.prevent="submitAndLoad">
-            <label>
-              Log ID
-              <input v-model.number="logId" type="number" min="1" required />
-            </label>
-            <button type="submit" :disabled="logLoading">Fetch</button>
-          </form>
+          <h2>Match details</h2>
+          <p v-if="activeMatchId" class="status-msg mono text-sm">{{ activeMatchId }}</p>
         </div>
 
-        <p v-if="logError" class="error-msg">{{ logError }}</p>
-        <p v-if="logLoading" class="status-msg">Loading log stats...</p>
+        <p v-if="!activeMatchId" class="status-msg">
+          Select a match from the list or upload a log to view details.
+        </p>
+        <p v-if="matchDetailError" class="error-msg">{{ matchDetailError }}</p>
 
-        <div v-if="logStats && !logLoading" class="log-grid">
-          <div>
-            <h3>Summary</h3>
-            <ul class="stat-list">
-              <li><strong>Map:</strong> {{ logStats.map }}</li>
-              <li><strong>Entries:</strong> {{ logStats.summary.entries }}</li>
-              <li><strong>Total Kills:</strong> {{ logStats.summary.total_kills }}</li>
-              <li><strong>Average DPM:</strong> {{ logStats.summary.avg_dpm }}</li>
-            </ul>
+        <!-- Skeleton while Query service materializes / loads -->
+        <div v-if="matchDetailLoading" class="space-y-4" aria-busy="true" aria-label="Loading match details">
+          <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div v-for="n in 4" :key="n" class="h-16 animate-pulse rounded-lg bg-gray-200" />
           </div>
+          <div class="space-y-2">
+            <div v-for="n in 5" :key="`row-${n}`" class="h-10 animate-pulse rounded bg-gray-200" />
+          </div>
+        </div>
+
+        <div v-else-if="matchSummary" class="log-grid">
+          <MatchSummaryCard
+            :summary="matchSummary"
+            :format-duration="formatDuration"
+            :format-date="formatDate"
+          />
           <div>
-            <h3>Players</h3>
-            <table v-if="logStats.stats.length">
-              <thead>
-                <tr>
-                  <th>Player</th>
-                  <th>SteamID</th>
-                  <th>Class</th>
-                  <th>K/D</th>
-                  <th>DPM</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="entry in logStats.stats" :key="`${entry.steamid}-${entry.class}`">
-                  <td>
-                    <RouterLink
-                      class="inline-link"
-                      :to="playerPath(entry.steamid)"
-                    >
-                      {{ entry.player_name }}
-                    </RouterLink>
-                  </td>
-                  <td>
-                    <RouterLink
-                      class="inline-link mono"
-                      :to="playerPath(entry.steamid)"
-                    >
-                      {{ entry.steamid }}
-                    </RouterLink>
-                  </td>
-                  <td>{{ entry.class }}</td>
-                  <td>{{ entry.kills }}/{{ entry.deaths }}</td>
-                  <td>{{ entry.dpm }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <h3>Team breakdown</h3>
+            <template v-if="teamSections.length">
+              <div
+                v-for="section in teamSections"
+                :key="section.key"
+                class="team-section"
+                :class="`team-${section.key}`"
+              >
+                <h4>{{ section.title }}</h4>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Player</th>
+                      <th>Classes</th>
+                      <th>K/D/A</th>
+                      <th>DPM</th>
+                      <th>Healing</th>
+                      <th>Rating</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="entry in section.players" :key="`${entry.steam_id}-${entry.team}`">
+                      <td>
+                        <RouterLink class="inline-link" :to="playerPath(entry.steam_id)">
+                          {{ formatPlayerLabel(entry) }}
+                        </RouterLink>
+                      </td>
+                      <td>{{ classesLabel(entry.classes_played) }}</td>
+                      <td>{{ entry.kills }}/{{ entry.deaths }}/{{ entry.assists }}</td>
+                      <td>{{ entry.damage_per_minute }}</td>
+                      <td>{{ entry.healing_done }}</td>
+                      <td>
+                        <span class="rating-chip" :class="`tone-${ratingTone(entry.rating)}`">
+                          {{ formatRating(entry.rating) }}
+                        </span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </template>
+            <p v-else class="status-msg">No player rows for this match yet.</p>
           </div>
         </div>
       </section>
+
       <section class="panel">
         <div class="panel-head">
-          <h2>All Matches</h2>
-          <p class="status-msg">Showing {{ matches.length }} of {{ matchesTotal }} total matches</p>
+          <h2>All matches</h2>
+          <p class="status-msg">
+            Page {{ matchesPage }} · {{ matches.length }} shown
+            <span v-if="matchesHasMore"> · more available</span>
+          </p>
         </div>
 
         <p v-if="matchesError" class="error-msg">{{ matchesError }}</p>
-        <p v-if="matchesLoading" class="status-msg">Loading matches...</p>
 
-        <table v-if="!matchesLoading && matches.length">
+        <div v-if="matchesLoading" class="space-y-2" aria-busy="true" aria-label="Loading matches">
+          <div v-for="n in 6" :key="n" class="h-10 animate-pulse rounded bg-gray-200" />
+        </div>
+
+        <table v-else-if="matches.length">
           <thead>
             <tr>
-              <th>Log ID</th>
+              <th>Match ID</th>
               <th>Map</th>
-              <th>Tournament</th>
+              <th>Winner</th>
+              <th>Duration</th>
+              <th>Date</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="match in matches" :key="match.id">
+            <tr
+              v-for="match in matches"
+              :key="match.match_id"
+              class="cursor-pointer"
+              :class="{ 'bg-sky-50': String(match.match_id) === activeMatchId }"
+              @click="openMatch(match.match_id)"
+            >
               <td>
-                <RouterLink class="inline-link mono" :to="logPath(match.log_id)">
-                  {{ match.log_id }}
+                <RouterLink class="inline-link mono" :to="matchPath(match.match_id)">
+                  {{ match.match_id }}
                 </RouterLink>
               </td>
-              <td>{{ match.map }}</td>
-              <td>{{ formatTournamentName(match) }}</td>
+              <td>{{ match.map_name }}</td>
+              <td>{{ match.winning_team }}</td>
+              <td>{{ formatDuration(match.duration_seconds) }}</td>
+              <td>{{ formatDate(match.date_played) }}</td>
             </tr>
           </tbody>
         </table>
 
-        <p v-if="!matchesLoading && !matchesError && !matches.length" class="status-msg">
-          No matches found.
-        </p>
+        <p v-else-if="!matchesError" class="status-msg">No matches found.</p>
 
         <div class="leaderboard-pagination">
           <button
+            type="button"
             :disabled="matchesLoading || matchesPage <= 1"
             @click="goToPage(matchesPage - 1)"
           >
             Previous
           </button>
-          <span>Page {{ matchesPage }} / {{ totalPages() }}</span>
+          <span>Page {{ matchesPage }}</span>
           <button
-            :disabled="matchesLoading || matchesPage >= totalPages()"
+            type="button"
+            :disabled="matchesLoading || !matchesHasMore"
             @click="goToPage(matchesPage + 1)"
           >
             Next

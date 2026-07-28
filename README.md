@@ -1,81 +1,155 @@
-# TF2 Analytics API
+# TF2 Analytics
 
-A full-stack web application designed for ingesting, analyzing, and visualizing Team Fortress 2 match logs.
+A full-stack web application for ingesting, analyzing, and visualizing Team Fortress 2 competitive match logs.
 
-This project provides tools to collect TF2 competitive log data (from sources like logs.tf), perform statistical analysis and rating aggregation, and present the data through a clean, interactive dashboard.
+Collect log data from sources like [logs.tf](https://logs.tf) and [matcha.tf](https://matcha.tf), compute per-class ratings, and browse tournament leaderboards, match stats, and player careers through a Vue dashboard.
 
-## Project Structure
+## Architecture
 
-The repository is organized into three main components:
+TF2 Analytics uses a **CQRS microservices** architecture:
 
-- **`server/` (Backend)**: A FastAPI application managing the core data ingestion, processing, database interactions (via SQLModel and PostgreSQL), and API endpoints for retrieving player and match statistics.
-- **`web/` (Frontend)**: A modern Vue.js application powered by Vite that serves as the dashboard. It visualizes data from the backend, including tournament leaderboards, match stats summaries, and player class breakdowns.
-- **`classifier/` (Data Analysis)**: A Jupyter notebook environment intended for advanced data classification, predictive models, or deep-dive log analysis algorithms.
+```text
+logproject/
+  web/                    Vue dashboard (:5173)
+  server/
+    cqrs/
+      command_service/    Write API + auth (:8001)
+      query_service/      Read API + projections (:8002)
+  api-consumer/           External auto-ingest (:8010)
+  docs/architecture.md    Full architecture design
+```
+
+| Service | Port | Role |
+|---|---|---|
+| [Command](server/cqrs/command_service/README.md) | 8001 | Log ingest, admin commands, Steam auth, event publish |
+| [Query](server/cqrs/query_service/README.md) | 8002 | Projections, leaderboards, player stats, search |
+| [Web](web/README.md) | 5173 | Vue SPA (reads query, writes command) |
+| [API consumer](api-consumer/README.md) | 8010 | matcha.tf → logs.tf → RabbitMQ (optional) |
+
+Events flow **command → RabbitMQ → query**. Both backend services use separate **PostgreSQL** databases. See [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Prerequisites
 
-- **Docker & Docker Compose**: For running the PostgreSQL database and backend API easily.
-- **Node.js & npm**: For running the Vue.js frontend locally.
-- **Python 3.12+**: For running the backend or classifier locally without Docker.
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Postgres, RabbitMQ, services)
+- Node.js 20+ and npm (web dashboard, optional if using Docker web service)
+- Python 3.12+ (local seeding, tests)
 
-## Setup & Running Locally
+## Quick start
 
-### Backend API & Database
+### 1. Start services
 
-The easiest way to run the backend and the database is using Docker Compose.
+```bash
+cd server
+docker compose up -d --build
+```
 
-1. Navigate to the `server/` directory:
-   ```bash
-   cd server
-   ```
-2. Start the services with Docker Compose:
-   ```bash
-   docker-compose up -d --build
-   ```
-   This will start a PostgreSQL database and the FastAPI application exposed on `http://localhost:8000`.
+This starts Postgres, RabbitMQ, command service, query service, and the web dev server.
 
-Alternatively, to run the server locally without Docker (requires a running PostgreSQL database):
-1. Create a virtual environment and install dependencies:
-   ```bash
-   cd server
-   python -m venv venv
-   source venv/bin/activate
-   pip install -r requirements.txt
-   ```
-2. Set your `DATABASE_URL` environment variable to point to your Postgres instance.
-3. Start the FastAPI development server:
-   ```bash
-   cd src
-   uvicorn main:app --reload --port 8000
-   ```
+Minimal backend only:
 
-### Web Dashboard
+```bash
+docker compose up -d db rabbitmq command-service query-service
+```
 
-1. Navigate to the `web/` directory:
-   ```bash
-   cd web
-   ```
-2. Install the necessary NPM packages:
-   ```bash
-   npm install
-   ```
-3. Start the Vite development server:
-   ```bash
-   npm run dev
-   ```
-   The dashboard will be accessible via your browser (typically `http://localhost:5173`). By default, it proxies API requests to `http://127.0.0.1:8000`. You can override the API URL by creating a `.env` file in the `web/` folder with `VITE_API_BASE_URL=http://your-api-url`.
+Optional external auto-ingest:
 
-### Data Classifier
+```bash
+docker compose --profile consumer up -d api-consumer
+```
 
-1. Navigate to the `classifier/` directory:
-   ```bash
-   cd classifier
-   ```
-2. Install the Jupyter environment requirements (preferably in a virtual environment):
-   ```bash
-   pip install -r src/requirements-classifier.txt
-   ```
-3. Open the notebook:
-   ```bash
-   jupyter notebook src/classifier.ipynb
-   ```
+### 2. Seed sample data
+
+```bash
+cd server
+python seed_cqrs.py --http
+```
+
+Or via Docker:
+
+```bash
+docker compose --profile seed run --rm seed
+```
+
+Reset and re-seed:
+
+```bash
+python seed_cqrs.py --http --reset
+```
+
+Seed data comes from `server/data/seed_logs_cache.json` (built from `invite.txt` via `build_seed_cache.py`).
+
+### 3. Open the dashboard
+
+If not using the Docker web container:
+
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Open **http://localhost:5173** and verify:
+
+- **Tournament** — leaderboard and recent matches
+- **Match** — per-player stats and class ratings
+- **Player** — career totals and class breakdown
+- **Nav lookup** — logs.tf ID, match UUID, or SteamID
+- **Admin** — `/admin/dashboard` (Steam login + ADMIN role)
+
+## Local development (host Python)
+
+```bash
+cd server
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+
+docker compose up -d db rabbitmq
+
+uvicorn cqrs.command_service.app.main:app --host 127.0.0.1 --port 8001 --reload
+uvicorn cqrs.query_service.app.main:app --host 127.0.0.1 --port 8002 --reload
+```
+
+Copy `server/.env.example` for environment overrides.
+
+## Documentation
+
+| Document | Description |
+|---|---|
+| [Architecture design](docs/architecture.md) | System design, data flows, events, deployment |
+| [Server](server/README.md) | Docker Compose, seeding, tests |
+| [Command service](server/cqrs/command_service/README.md) | Write API, auth, ingest |
+| [Query service](server/cqrs/query_service/README.md) | Read API, projections |
+| [Web dashboard](web/README.md) | Frontend routes, proxy, build |
+| [API consumer](api-consumer/README.md) | matcha.tf auto-ingest |
+| [Monolith migration notes](server/LEGACY.md) | Historical API mapping (monolith removed) |
+
+## Tests
+
+```bash
+cd server
+docker compose up -d db db-init
+python -m pytest cqrs/tests -q
+```
+
+```bash
+cd web
+npm test
+```
+
+```bash
+cd api-consumer
+npm test
+```
+
+## Data classifier
+
+Experimental rating work in a Jupyter notebook:
+
+```bash
+cd classifier
+pip install -r src/requirements-classifier.txt
+jupyter notebook src/classifier.ipynb
+```
+
+The production rating model lives in `server/cqrs/shared/rating.py`.

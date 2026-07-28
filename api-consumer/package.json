@@ -1,0 +1,27 @@
+{
+  "name": "tf2-api-consumer",
+  "version": "1.0.0",
+  "description": "Event-driven TF2 log source consumer (matcha.tf → CQRS MatchParsed)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "jest --runInBand",
+    "test:watch": "jest --watch"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "amqplib": "^0.10.5",
+    "express": "^4.21.2",
+    "node-cron": "^3.0.3",
+    "opossum": "^8.4.0",
+    "pino": "^9.6.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

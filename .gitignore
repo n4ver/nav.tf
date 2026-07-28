@@ -1,0 +1,21 @@
+# IDE
+.idea/
+
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Local database artifacts (SQLite test DBs live under server/testing/databases/)
+*.db
+*.db-shm
+*.db-wal
+
+# OS
+.DS_Store
+Thumbs.db
