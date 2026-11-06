@@ -127,10 +127,6 @@ function stableTournamentIdFromSlug(slug) {
  * @property {number} damage_dealt
  * @property {number} damage_received
  * @property {number} heals_received
- * @property {number} captures
- * @property {number} headshots
- * @property {number} backstabs
- * @property {number} airshots
  * @property {number} ubers
  * @property {number} drops
  * @property {number} healing_done
@@ -153,6 +149,10 @@ function stableTournamentIdFromSlug(slug) {
  * @property {number} heals_received
  * @property {number} ubers
  * @property {number} drops
+ * @property {number} captures
+ * @property {number} headshots
+ * @property {number} backstabs
+ * @property {number} airshots
  * @property {ClassStat[]} class_stats
  */
 
@@ -201,12 +201,6 @@ function createClassStat(partial = {}) {
     damage_dealt: intOr(partial.damage_dealt),
     damage_received: intOr(partial.damage_received),
     heals_received: intOr(partial.heals_received),
-    captures: intOr(partial.captures),
-    headshots: intOr(partial.headshots),
-    backstabs: intOr(partial.backstabs),
-    airshots: intOr(partial.airshots),
-    ubers: intOr(partial.ubers),
-    drops: intOr(partial.drops),
     healing_done: intOr(partial.healing_done),
   };
 }
@@ -245,6 +239,10 @@ function createPlayerStat(partial = {}) {
     heals_received: intOr(partial.heals_received),
     ubers: intOr(partial.ubers),
     drops: intOr(partial.drops),
+    captures: intOr(partial.captures),
+    headshots: intOr(partial.headshots),
+    backstabs: intOr(partial.backstabs),
+    airshots: intOr(partial.airshots),
     class_stats: classStats,
   };
 }

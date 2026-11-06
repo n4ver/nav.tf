@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "jest --runInBand",
-    "test:watch": "jest --watch"
+    "test": "jest --config ../server/dev-setup/javascript/jest.api-consumer.config.js --runInBand",
+    "test:coverage": "jest --config ../server/dev-setup/javascript/jest.api-consumer.config.js --runInBand --coverage",
+    "test:watch": "jest --config ../server/dev-setup/javascript/jest.api-consumer.config.js --watch"
   },
   "engines": {
     "node": ">=20"

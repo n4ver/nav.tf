@@ -17,11 +17,48 @@ const {
 function primaryAccuracy(classRow) {
   const weapon = classRow?.weapon;
   if (!weapon || typeof weapon !== 'object') return 0;
-  const primary = weapon.primary;
-  if (primary && typeof primary === 'object') {
-    return floatOr(primary.acc);
+
+  const weaponAccuracy = (stats) => {
+    if (!stats || typeof stats !== 'object') return null;
+    const shots = floatOr(stats.shots);
+    const hits = floatOr(stats.hits);
+    if (stats.acc != null) {
+      let value = floatOr(stats.acc);
+      if (value > 1) value /= 100;
+      return value;
+    }
+    if (shots > 0) return hits / shots;
+    return null;
+  };
+
+  if (weapon.primary && typeof weapon.primary === 'object') {
+    const primaryAcc = weaponAccuracy(weapon.primary);
+    if (primaryAcc != null) return Math.round(primaryAcc * 10000) / 10000;
   }
-  return 0;
+
+  let totalShots = 0;
+  let totalHits = 0;
+  let bestShots = 0;
+  let bestAcc = 0;
+  for (const stats of Object.values(weapon)) {
+    if (!stats || typeof stats !== 'object') continue;
+    const shots = floatOr(stats.shots);
+    const hits = floatOr(stats.hits);
+    const acc = weaponAccuracy(stats);
+    if (acc == null) continue;
+    if (shots > 0) {
+      totalShots += shots;
+      totalHits += stats.hits != null ? hits : acc * shots;
+      if (shots >= bestShots) {
+        bestShots = shots;
+        bestAcc = acc;
+      }
+    } else if (acc > bestAcc) {
+      bestAcc = acc;
+    }
+  }
+  if (totalShots > 0) return Math.round((totalHits / totalShots) * 10000) / 10000;
+  return Math.round(bestAcc * 10000) / 10000;
 }
 
 function datePlayedFromLogsTf(data) {
@@ -91,6 +128,11 @@ function extractPlayers(data) {
     const healingDone = intOr(player?.heal);
     const ubers = intOr(player?.ubers);
     const drops = intOr(player?.drops);
+    // Player-level on logs.tf — class_stats rows do not include these fields.
+    const captures = intOr(player?.cpc);
+    const headshots = intOr(player?.headshots);
+    const backstabs = intOr(player?.backstabs);
+    const airshots = intOr(player?.as);
     const rawName = names[steamId];
     const displayName = rawName ? String(rawName).trim() || null : null;
 
@@ -114,12 +156,6 @@ function extractPlayers(data) {
           damage_dealt: damageDealt,
           damage_received: damageReceived,
           heals_received: healsReceived,
-          captures: intOr(row?.cpc),
-          headshots: intOr(row?.headshots),
-          backstabs: intOr(row?.backstabs),
-          airshots: intOr(row?.as),
-          ubers: isMedic ? ubers : 0,
-          drops: isMedic ? drops : 0,
           healing_done: isMedic ? healingDone : 0,
         })
       );
@@ -155,6 +191,10 @@ function extractPlayers(data) {
         heals_received: healsReceived,
         ubers,
         drops,
+        captures,
+        headshots,
+        backstabs,
+        airshots,
         class_stats: classStats,
       })
     );

@@ -65,12 +65,19 @@ describe('matcha.tf → normalized MatchLogIngested payload', () => {
     expect(medic).toBeTruthy();
     expect(medic.ubers).toBeGreaterThan(0);
     expect(medic.class_stats[0].healing_done).toBeGreaterThan(0);
+    expect(medic.captures).toBeGreaterThan(0);
+    expect(medic.class_stats[0].primary_accuracy).toBeGreaterThan(0);
 
     const scout = normalized.players.find((p) => p.display_name === 'hezy');
     expect(scout).toBeTruthy();
     expect(scout.kills).toBe(15);
     expect(scout.deaths).toBe(8);
     expect(scout.damage_per_minute).toBeGreaterThan(0);
+    expect(scout.captures).toBeGreaterThan(0);
+    expect(scout.class_stats.some((c) => c.primary_accuracy > 0)).toBe(true);
+
+    const soldierWithAir = normalized.players.find((p) => p.airshots > 0);
+    expect(soldierWithAir).toBeTruthy();
 
     const event = createMatchLogIngestedEvent(normalized, {
       correlationId: 'corr-test-001',
