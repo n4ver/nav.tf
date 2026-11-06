@@ -1,14 +1,21 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
-import { fetchQueryHealth, fetchTournaments, getQueryBaseUrl } from '../api'
+import { useRoute } from 'vue-router'
+import { fetchEvents, fetchTournaments } from '../api'
+import MatchResultList from '../components/match/MatchResultList.vue'
+import PlayerLeaderboard from '../components/stats/PlayerLeaderboard.vue'
+import DataGrid from '../components/ui/DataGrid.vue'
+import Panel from '../components/ui/Panel.vue'
+import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
+import StateMessage from '../components/ui/StateMessage.vue'
 import { useCan } from '../composables/useCan'
 import { useMatchQueryStore } from '../stores/matchQuery'
 import { useRatingQueryStore } from '../stores/ratingQuery'
+import { errorMessage, formatDate } from '../utils/format'
 import { formatRating, ratingTone } from '../utils/rating'
-import { formatPlayerLabel } from '../utils/steam'
 
-const apiBaseUrl = getQueryBaseUrl()
+const route = useRoute()
 const { allowed: canAdmin } = useCan('ADMIN')
 const matchQuery = useMatchQueryStore()
 const ratingQuery = useRatingQueryStore()
@@ -22,358 +29,227 @@ const {
   benchmarksError,
 } = storeToRefs(ratingQuery)
 
-const health = ref(null)
-const healthError = ref('')
-
 const tournaments = ref([])
 const tournamentsLoading = ref(false)
 const tournamentsError = ref('')
 const selectedTournament = ref('')
 const classFilter = ref('')
+const events = ref([])
+const selectedEvent = ref('')
 
-function tournamentLabel(tournament) {
-  const matchCount = Number(tournament.match_count) || 0
-  const suffix = matchCount === 1 ? 'match' : 'matches'
-  return `${tournament.name} — ${matchCount} ${suffix}`
-}
+const visibleTournaments = computed(() => {
+  if (!selectedEvent.value) return tournaments.value
+  return tournaments.value.filter((row) => String(row.event_id || '') === String(selectedEvent.value))
+})
 
-function selectTournament(tournament) {
-  selectedTournament.value = String(tournament.tournament_id)
-}
-
-function matchPath(matchId) {
-  return `/match/${encodeURIComponent(String(matchId))}`
-}
-
-function playerPath(steamId) {
-  return `/player/${encodeURIComponent(String(steamId))}`
-}
-
-function formatDuration(seconds) {
-  const total = Number(seconds) || 0
-  const mins = Math.floor(total / 60)
-  return `${mins}m`
-}
-
-function formatDate(value) {
-  if (!value) return '—'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return String(value)
-  }
-}
-
-const selectedTournamentMeta = computed(() =>
-  tournaments.value.find((t) => String(t.tournament_id) === selectedTournament.value) || null,
+const selectedTournamentMeta = computed(
+  () => tournaments.value.find((t) => String(t.tournament_id) === selectedTournament.value) || null,
 )
+
+const selectedEventName = computed(() => {
+  const id = selectedTournamentMeta.value?.event_id
+  return id ? events.value.find((e) => String(e.event_id) === String(id))?.name || '' : ''
+})
+
+const benchmarkColumns = [
+  { key: 'class_name', label: 'Class', sortable: true },
+  { key: 'sample_size', label: 'n', sortable: true, align: 'right', numeric: true },
+  { key: 'avg_rating', label: 'Avg', sortable: true, align: 'right', numeric: true },
+  {
+    key: 'p50_rating',
+    label: 'P50',
+    sortable: true,
+    align: 'right',
+    numeric: true,
+    format: (v) => formatRating(v),
+  },
+]
 
 async function loadTournaments() {
   tournamentsLoading.value = true
   tournamentsError.value = ''
 
   try {
-    tournaments.value = await fetchTournaments()
-    if (!selectedTournament.value && tournaments.value.length) {
-      selectedTournament.value = String(tournaments.value[0].tournament_id)
+    const [tournamentRows, eventRows] = await Promise.all([fetchTournaments(), fetchEvents()])
+    tournaments.value = Array.isArray(tournamentRows) ? tournamentRows : []
+    events.value = Array.isArray(eventRows) ? eventRows : []
+    const requested = String(route.query.tournament || '')
+    if (requested && tournaments.value.some((row) => String(row.tournament_id) === requested)) {
+      selectedTournament.value = requested
     }
-    if (!tournaments.value.length) {
-      tournamentsError.value = 'No tournaments projected yet. Upload a log to seed data.'
+    const visible = visibleTournaments.value
+    if (!selectedTournament.value && visible.length) {
+      selectedTournament.value = String(visible[0].tournament_id)
     }
   } catch (error) {
     tournaments.value = []
-    tournamentsError.value = error instanceof Error ? error.message : 'Failed to load tournaments'
+    tournamentsError.value = errorMessage(error, 'Failed to load tournaments')
   } finally {
     tournamentsLoading.value = false
   }
 }
 
-async function loadRatingViews({ force = false } = {}) {
-  const tasks = [ratingQuery.loadBenchmarks({ force })]
-  if (selectedTournament.value) {
-    tasks.push(
-      ratingQuery.loadLeaderboard(selectedTournament.value, {
-        className: classFilter.value,
-        limit: 25,
-        force,
-      }),
-    )
-  }
-  await Promise.all(tasks)
-}
-
-async function loadHealth() {
-  healthError.value = ''
-  try {
-    health.value = await fetchQueryHealth()
-  } catch (error) {
-    health.value = null
-    healthError.value = error instanceof Error ? error.message : 'Failed to check API health'
-  }
+function loadTournamentData(tournamentId) {
+  return Promise.all([
+    matchQuery.loadMatches({ page: 1, pageSize: 12, tournamentId }),
+    ratingQuery.loadLeaderboard(tournamentId, { className: classFilter.value, limit: 50, force: true }),
+  ])
 }
 
 onMounted(async () => {
-  await loadHealth()
   await loadTournaments()
-  if (selectedTournament.value) {
-    await Promise.all([
-      matchQuery.loadMatches({
-        page: 1,
-        pageSize: 10,
-        tournamentId: selectedTournament.value,
-      }),
-      loadRatingViews({ force: true }),
-    ])
-  } else {
-    await ratingQuery.loadBenchmarks({ force: true })
-  }
-})
-
-watch(selectedTournament, async (tournamentId) => {
-  if (!tournamentId) {
-    return
-  }
   await Promise.all([
-    matchQuery.loadMatches({ page: 1, pageSize: 10, tournamentId }),
-    ratingQuery.loadLeaderboard(tournamentId, {
-      className: classFilter.value,
-      limit: 25,
-      force: true,
-    }),
+    ratingQuery.loadBenchmarks({ force: true }),
+    selectedTournament.value ? loadTournamentData(selectedTournament.value) : null,
   ])
 })
 
-watch(classFilter, async () => {
-  if (!selectedTournament.value) {
-    return
+watch(selectedTournament, async (tournamentId, previous) => {
+  // The initial selection is loaded by onMounted.
+  if (!tournamentId || !previous) return
+  await loadTournamentData(tournamentId)
+})
+
+watch(selectedEvent, () => {
+  const visible = visibleTournaments.value
+  if (!visible.some((row) => String(row.tournament_id) === selectedTournament.value)) {
+    selectedTournament.value = visible.length ? String(visible[0].tournament_id) : ''
   }
+})
+
+watch(classFilter, async () => {
+  if (!selectedTournament.value) return
   await ratingQuery.loadLeaderboard(selectedTournament.value, {
     className: classFilter.value,
-    limit: 25,
+    limit: 50,
     force: true,
   })
 })
 </script>
 
 <template>
-  <div class="page-wrap">
-    <header class="hero">
-      <p class="eyebrow">TF2 analytics dashboard</p>
-      <h1>Tournament Dashboard</h1>
-      <p>
-        Standings use the Query-side RatingService (0–2 band, 1.0 ≈ class average) at
-        <code>{{ apiBaseUrl }}</code>.
-      </p>
-      <p v-if="canAdmin">
-        <RouterLink class="inline-link" to="/admin/dashboard">Edit tournaments &amp; upload logs</RouterLink>
-      </p>
-      <div class="health-chip" :class="{ bad: healthError }">
-        <strong>API health:</strong>
-        <span v-if="health">{{ health.status }}{{ health.side ? ` (${health.side})` : '' }}</span>
-        <span v-else-if="healthError">Unavailable</span>
-        <span v-else>Checking...</span>
+  <div class="space-y-3">
+    <h1 class="sr-only">Tournament overview</h1>
+
+    <div v-if="tournamentsLoading" aria-busy="true" aria-label="Loading tournaments">
+      <SkeletonBlock :rows="1" height="h-9" />
+    </div>
+
+    <StateMessage v-else-if="tournamentsError" tone="error">{{ tournamentsError }}</StateMessage>
+
+    <Panel v-else-if="!tournaments.length" title="Tournaments">
+      <StateMessage>
+        No tournaments projected yet.
+        <RouterLink v-if="canAdmin" class="data-link font-semibold text-blu" :to="{ name: 'admin-tournaments' }">
+          Create one in Admin → Tournaments.
+        </RouterLink>
+        <template v-else>Check back once an admin has ingested logs.</template>
+      </StateMessage>
+    </Panel>
+
+    <!-- Tournament tabs + event filter -->
+    <div v-else class="flex flex-wrap items-center gap-2" data-test="tournament-tabs">
+      <label v-if="events.length" class="sr-only" for="event-filter">Event</label>
+      <select
+        v-if="events.length"
+        id="event-filter"
+        v-model="selectedEvent"
+        class="field w-auto py-1 text-xs"
+      >
+        <option value="">All events</option>
+        <option v-for="event in events" :key="event.event_id" :value="String(event.event_id)">
+          {{ event.name }}
+        </option>
+      </select>
+      <button
+        v-for="tournament in visibleTournaments"
+        :key="tournament.tournament_id"
+        type="button"
+        class="tab"
+        :class="{ 'tab-active': String(tournament.tournament_id) === selectedTournament }"
+        :aria-pressed="String(tournament.tournament_id) === selectedTournament"
+        @click="selectedTournament = String(tournament.tournament_id)"
+      >
+        {{ tournament.name }}
+        <span class="ml-1.5 tabular-nums opacity-70">{{ Number(tournament.match_count) || 0 }}</span>
+      </button>
+      <StateMessage v-if="!visibleTournaments.length">No tournaments in this event yet.</StateMessage>
+    </div>
+
+    <div class="grid gap-3 lg:grid-cols-[280px_minmax(0,1fr)] xl:grid-cols-[280px_minmax(0,1fr)_280px]">
+      <!-- Left: recent results -->
+      <Panel title="Recent results" flush class="order-2 lg:order-1">
+        <template #actions>
+          <RouterLink class="data-link text-xs text-ink-muted" to="/match">All results ›</RouterLink>
+        </template>
+        <StateMessage v-if="matchesError" tone="error" class="m-3">{{ matchesError }}</StateMessage>
+        <MatchResultList
+          v-else
+          :matches="selectedTournament ? matches : []"
+          :loading="matchesLoading"
+          compact
+          empty-message="No matches projected yet."
+        />
+      </Panel>
+
+      <!-- Centre: leaderboard -->
+      <Panel flush class="order-1 lg:order-2">
+        <template #title>
+          {{ selectedTournamentMeta ? `${selectedTournamentMeta.name} — leaderboard` : 'Leaderboard' }}
+        </template>
+        <PlayerLeaderboard
+          v-model:class-filter="classFilter"
+          :rows="selectedTournament ? leaderboard : []"
+          :loading="leaderboardLoading"
+          :error="leaderboardError"
+          :empty-message="selectedTournament ? 'No players rated for this filter yet.' : 'Select a tournament.'"
+        />
+      </Panel>
+
+      <!-- Right: tournament facts + benchmarks -->
+      <div class="order-3 space-y-3 lg:col-span-2 xl:col-span-1">
+        <Panel v-if="selectedTournamentMeta" title="Tournament">
+          <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            <dt class="text-ink-muted">Name</dt>
+            <dd class="font-semibold">{{ selectedTournamentMeta.name }}</dd>
+            <template v-if="selectedEventName">
+              <dt class="text-ink-muted">Event</dt>
+              <dd>
+                <RouterLink class="data-link" :to="{ name: 'event', params: { eventId: selectedTournamentMeta.event_id } }">
+                  {{ selectedEventName }}
+                </RouterLink>
+              </dd>
+            </template>
+            <dt class="text-ink-muted">Matches</dt>
+            <dd class="tabular-nums">{{ Number(selectedTournamentMeta.match_count) || 0 }}</dd>
+            <dt class="text-ink-muted">Started</dt>
+            <dd>{{ formatDate(selectedTournamentMeta.started_at) }}</dd>
+          </dl>
+        </Panel>
+
+        <Panel title="Class benchmarks" flush>
+          <StateMessage v-if="benchmarksError" tone="error" class="m-3">{{ benchmarksError }}</StateMessage>
+          <DataGrid
+            v-else
+            :rows="benchmarks"
+            :columns="benchmarkColumns"
+            :row-key="(row) => row.class_id ?? row.class_name"
+            :loading="benchmarksLoading"
+            empty-message="No class benchmarks yet."
+            default-sort-key="avg_rating"
+            fit-container
+          >
+            <template #cell-class_name="{ value }">
+              <span class="capitalize">{{ value }}</span>
+            </template>
+            <template #cell-avg_rating="{ row }">
+              <span class="rating-chip" :class="`tone-${ratingTone(row.avg_rating)}`">
+                {{ formatRating(row.avg_rating, 2) }}
+              </span>
+            </template>
+          </DataGrid>
+        </Panel>
       </div>
-      <p v-if="healthError" class="error-msg">{{ healthError }}</p>
-    </header>
-
-    <main class="content-grid">
-      <section class="panel">
-        <div v-if="tournaments.length" class="tournament-index">
-          <button
-            v-for="tournament in tournaments"
-            :key="tournament.tournament_id"
-            type="button"
-            class="tournament-card"
-            :class="{ active: String(tournament.tournament_id) === selectedTournament }"
-            @click="selectTournament(tournament)"
-          >
-            <span class="tournament-card-title">{{ tournament.name }}</span>
-            <span class="tournament-card-meta">{{ tournament.slug }}</span>
-            <span class="tournament-card-meta">{{ Number(tournament.match_count) || 0 }} matches</span>
-          </button>
-        </div>
-
-        <div class="panel-head">
-          <h2>Tournament</h2>
-          <form
-            @submit.prevent="
-              async () => {
-                await loadTournaments()
-                await loadRatingViews({ force: true })
-              }
-            "
-          >
-            <label>
-              Tournament
-              <select v-model="selectedTournament" :disabled="tournamentsLoading || !tournaments.length">
-                <option
-                  v-for="tournament in tournaments"
-                  :key="tournament.tournament_id"
-                  :value="String(tournament.tournament_id)"
-                >
-                  {{ tournamentLabel(tournament) }}
-                </option>
-              </select>
-            </label>
-            <button type="submit" :disabled="tournamentsLoading">Refresh</button>
-          </form>
-        </div>
-
-        <p v-if="tournamentsError" class="error-msg">{{ tournamentsError }}</p>
-        <p v-else-if="tournamentsLoading" class="status-msg">Loading tournament index...</p>
-
-        <div v-if="tournamentsLoading" class="mt-3 grid gap-2 sm:grid-cols-3">
-          <div v-for="n in 3" :key="n" class="h-24 animate-pulse rounded-xl bg-gray-200" />
-        </div>
-
-        <div class="split" v-if="!tournamentsLoading">
-          <article>
-            <h3>Selected tournament</h3>
-            <ul v-if="selectedTournamentMeta" class="stat-list">
-              <li><strong>Name:</strong> {{ selectedTournamentMeta.name }}</li>
-              <li><strong>Slug:</strong> {{ selectedTournamentMeta.slug }}</li>
-              <li><strong>Matches:</strong> {{ selectedTournamentMeta.match_count }}</li>
-              <li>
-                <strong>Started:</strong>
-                {{ formatDate(selectedTournamentMeta.started_at) }}
-              </li>
-            </ul>
-            <p v-else class="status-msg">
-              Upload a log from the Match Dashboard to project tournament summaries.
-            </p>
-          </article>
-
-          <article>
-            <h3>Recent matches</h3>
-            <p v-if="matchesError" class="error-msg">{{ matchesError }}</p>
-            <div v-if="matchesLoading" class="space-y-2" aria-busy="true">
-              <div v-for="n in 4" :key="n" class="h-10 animate-pulse rounded bg-gray-200" />
-            </div>
-            <table v-else-if="matches.length">
-              <thead>
-                <tr>
-                  <th>Match</th>
-                  <th>Map</th>
-                  <th>Winner</th>
-                  <th>Duration</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="match in matches" :key="match.match_id">
-                  <td>
-                    <RouterLink class="inline-link mono" :to="matchPath(match.match_id)">
-                      {{ String(match.match_id).slice(0, 8) }}…
-                    </RouterLink>
-                  </td>
-                  <td>{{ match.map_name }}</td>
-                  <td>{{ match.winning_team }}</td>
-                  <td>{{ formatDuration(match.duration_seconds) }}</td>
-                </tr>
-              </tbody>
-            </table>
-            <p v-else class="status-msg">No matches projected yet.</p>
-          </article>
-        </div>
-
-        <div class="mt-4" v-if="selectedTournament">
-          <div class="panel-head">
-            <h3>Rating leaderboard</h3>
-            <label>
-              Class filter
-              <select v-model="classFilter">
-                <option value="">All classes</option>
-                <option value="scout">scout</option>
-                <option value="soldier">soldier</option>
-                <option value="pyro">pyro</option>
-                <option value="demoman">demoman</option>
-                <option value="heavyweapons">heavyweapons</option>
-                <option value="engineer">engineer</option>
-                <option value="medic">medic</option>
-                <option value="sniper">sniper</option>
-                <option value="spy">spy</option>
-              </select>
-            </label>
-          </div>
-
-          <p v-if="leaderboardError" class="error-msg">{{ leaderboardError }}</p>
-          <div v-if="leaderboardLoading" class="space-y-2" aria-busy="true">
-            <div v-for="n in 5" :key="n" class="h-10 animate-pulse rounded bg-gray-200" />
-          </div>
-          <table v-else-if="leaderboard.length">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Player</th>
-                <th>Class</th>
-                <th>Matches</th>
-                <th>K/D/A</th>
-                <th>Avg DPM</th>
-                <th>Rating</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(entry, index) in leaderboard" :key="entry.steam_id">
-                <td>{{ index + 1 }}</td>
-                <td>
-                  <RouterLink class="inline-link" :to="playerPath(entry.steam_id)">
-                    {{ formatPlayerLabel(entry) }}
-                  </RouterLink>
-                </td>
-                <td>{{ entry.primary_class }}</td>
-                <td>{{ entry.matches_played }}</td>
-                <td>{{ entry.total_kills }}/{{ entry.total_deaths }}/{{ entry.total_assists }}</td>
-                <td>{{ entry.average_damage_per_minute }}</td>
-                <td>
-                  <span class="rating-chip" :class="`tone-${ratingTone(entry.average_rating)}`">
-                    {{ formatRating(entry.average_rating) }}
-                  </span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-else class="status-msg">No leaderboard rows yet for this tournament.</p>
-        </div>
-
-        <div class="mt-4">
-          <div class="panel-head">
-            <h3>Class rating benchmarks</h3>
-            <p class="status-msg">Baselines rebuilt after each MatchParsed projection.</p>
-          </div>
-          <p v-if="benchmarksError" class="error-msg">{{ benchmarksError }}</p>
-          <div v-if="benchmarksLoading" class="space-y-2" aria-busy="true">
-            <div v-for="n in 4" :key="n" class="h-10 animate-pulse rounded bg-gray-200" />
-          </div>
-          <table v-else-if="benchmarks.length">
-            <thead>
-              <tr>
-                <th>Class</th>
-                <th>Samples</th>
-                <th>Avg</th>
-                <th>P50</th>
-                <th>Min</th>
-                <th>Max</th>
-                <th>Std</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="row in benchmarks" :key="row.class_id ?? row.class_name">
-                <td>{{ row.class_name }}</td>
-                <td>{{ row.sample_size }}</td>
-                <td>
-                  <span class="rating-chip" :class="`tone-${ratingTone(row.avg_rating)}`">
-                    {{ formatRating(row.avg_rating) }}
-                  </span>
-                </td>
-                <td>{{ formatRating(row.p50_rating) }}</td>
-                <td>{{ formatRating(row.min_rating) }}</td>
-                <td>{{ formatRating(row.max_rating) }}</td>
-                <td>{{ formatRating(row.std_rating) }}</td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-else class="status-msg">No class benchmarks yet. Ingest a match to rebuild ratings.</p>
-        </div>
-      </section>
-    </main>
+    </div>
   </div>
 </template>
