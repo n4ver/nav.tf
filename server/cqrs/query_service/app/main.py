@@ -20,6 +20,7 @@ from ...shared.schemas import (
     SearchResultView,
     TournamentSummaryView,
 )
+from ...shared.settings import enforce_production_settings, fastapi_docs_kwargs
 from .consumer import start_event_consumer
 from .db import SessionLocal, get_read_session, init_read_db
 from .models import MatchSummaryProjection
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    enforce_production_settings("query")
     await init_read_db()
     logger.info("Query service database initialized")
     start_event_consumer()
@@ -40,7 +42,12 @@ async def lifespan(_app: FastAPI):
     await close_broker()
 
 
-app = FastAPI(title="CQRS Query Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="CQRS Query Service",
+    version="1.0.0",
+    lifespan=lifespan,
+    **fastapi_docs_kwargs(),
+)
 add_cors_middleware(app)
 
 
