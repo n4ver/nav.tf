@@ -117,6 +117,12 @@ uvicorn cqrs.query_service.app.main:app --host 127.0.0.1 --port 8002 --reload
 
 Copy `server/.env.example` for environment overrides.
 
+## Production deployment
+
+Production runs on Google Cloud: one Compute Engine VM running a Docker Compose stack, with Caddy providing automatic HTTPS. GitHub Actions deploys through Artifact Registry and Workload Identity Federation, with secrets in Secret Manager. The setup works with the free-trial credit.
+
+See **[deploy/README.md](deploy/README.md)** for the one-time bootstrap, DNS, GitHub configuration, operations, cost and teardown.
+
 ## Documentation
 
 | Document | Description |
@@ -127,6 +133,7 @@ Copy `server/.env.example` for environment overrides.
 | [Query service](server/cqrs/query_service/README.md) | Read API, projections |
 | [Web dashboard](web/README.md) | Frontend routes, proxy, build |
 | [API consumer](api-consumer/README.md) | matcha.tf auto-ingest |
+| [Production deployment](deploy/README.md) | Google Cloud setup, CI/CD, operations |
 
 ## Tests
 

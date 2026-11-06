@@ -247,14 +247,17 @@ docker compose --profile consumer up -d api-consumer
 | `consumer` | `api-consumer` |
 | `seed` | One-shot `seed` container |
 
-### Production considerations
+### Production (Google Cloud)
 
-- Run command and query as separate containers (already supported)
-- Place a reverse proxy in front of web static assets; set `VITE_COMMAND_BASE_URL` and `VITE_QUERY_BASE_URL` to public API URLs (no Vite proxy in prod)
-- Set strong `JWT_SECRET` and `SEED_SERVICE_TOKEN`
-- Configure `STEAM_API_KEY`, `STEAM_OPENID_REALM`, and `FRONTEND_URL` for production domain
-- RabbitMQ should be clustered or managed (AWS MQ, CloudAMQP) for HA
-- Postgres: separate connection pools per service; consider read replicas only if query load warrants it (projections are already precomputed)
+Production runs the same services on one Compute Engine VM with [`deploy/compose.prod.yml`](../deploy/compose.prod.yml). Caddy terminates TLS and serves the built SPA. It maps `/api/command|auth|query/` to the services' internal `/api/v1/...` routes, mirroring the dev nginx gateway. Postgres and RabbitMQ run as containers on persistent volumes, protected by daily disk snapshots. Only ports 80/443 are public, and SSH goes through IAP only.
+
+GitHub Actions builds the images into Artifact Registry and deploys over IAP using Workload Identity Federation. Secrets live in Secret Manager. With `APP_ENV=production`, the services refuse to start with development secrets or credentials (`server/cqrs/shared/settings.py`).
+
+Setup, operations, cost and teardown are covered in **[deploy/README.md](../deploy/README.md)**.
+
+Known limits of the single-VM setup:
+- No HA: one VM, with Postgres and RabbitMQ on the same host. Recovery is by snapshot restore.
+- Moving to Cloud SQL, or to a managed or clustered broker, is mostly a matter of changing the database and broker URLs.
 
 ## Technology stack
 
