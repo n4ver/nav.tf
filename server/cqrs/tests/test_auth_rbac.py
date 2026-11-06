@@ -6,6 +6,8 @@ from cqrs.shared.auth import UserRole, create_access_token, decode_access_token
 from cqrs.shared.auth.steam_openid import extract_steam_id_from_claimed_id
 from cqrs.shared.steam import canonical_steam_id
 
+ADMIN_STEAM_ID = "76561198000000001"
+
 
 def test_jwt_embeds_steam_id_and_role():
     token = create_access_token(
@@ -94,7 +96,10 @@ def test_steam_login_uses_forwarded_host(client):
     )
     assert response.status_code == 302
     location = response.headers["location"]
-    assert "openid.return_to=http%3A%2F%2Flocalhost%3A5173" in location
+    assert (
+        "openid.return_to=http%3A%2F%2Flocalhost%3A5173%2Fapi%2Fauth%2Fsteam%2Fcallback"
+        in location
+    )
 
 
 def test_admin_can_create_tournament_and_query_lists_it(client):

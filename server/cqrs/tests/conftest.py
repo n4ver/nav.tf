@@ -13,8 +13,9 @@ from sqlalchemy import text
 
 SERVER_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SERVER_ROOT))
+sys.path.insert(0, str(SERVER_ROOT / "dev-setup"))
 
-from testing.postgres import (  # noqa: E402
+from postgres import (
     create_postgres_engine,
     dispose_engine,
     postgres_test_url,
@@ -32,9 +33,9 @@ os.environ["CQRS_QUERY_DATABASE_URL"] = os.getenv(
     postgres_test_url("cqrs_query_test"),
 )
 
-from cqrs.shared.auth import UserRole, create_access_token  # noqa: E402
-from cqrs.command_service.app.main import app as command_app  # noqa: E402
-from cqrs.query_service.app.main import app as query_app  # noqa: E402
+from cqrs.command_service.app.main import app as command_app
+from cqrs.query_service.app.main import app as query_app
+from cqrs.shared.auth import UserRole, create_access_token
 
 ADMIN_STEAM_ID = "76561198000000001"
 PLAYER_STEAM_ID = "76561198000000002"
@@ -63,7 +64,7 @@ def postgres_available() -> None:
     for database in ("cqrs_command_test", "cqrs_query_test"):
         engine = create_postgres_engine(database)
 
-        async def probe() -> None:
+        async def probe(engine=engine) -> None:
             async with engine.connect() as connection:
                 await connection.execute(text("SELECT 1"))
 
@@ -88,27 +89,29 @@ def client():
     dispose_engine(command_engine)
     dispose_engine(query_engine)
 
-    with TestClient(command_app) as command_client:
-        with TestClient(query_app) as query_client:
-            # Default command mutations as admin so existing write-path tests stay green.
-            _post = command_client.post
-            _patch = command_client.patch
+    with (
+        TestClient(command_app) as command_client,
+        TestClient(query_app) as query_client,
+    ):
+        # Default command mutations as admin so existing write-path tests stay green.
+        _post = command_client.post
+        _patch = command_client.patch
 
-            def post_with_admin(url, **kwargs):
-                headers = dict(kwargs.pop("headers", None) or {})
-                if "Authorization" not in headers:
-                    headers.update(admin_auth_headers())
-                return _post(url, headers=headers, **kwargs)
+        def post_with_admin(url, **kwargs):
+            headers = dict(kwargs.pop("headers", None) or {})
+            if "Authorization" not in headers:
+                headers.update(admin_auth_headers())
+            return _post(url, headers=headers, **kwargs)
 
-            def patch_with_admin(url, **kwargs):
-                headers = dict(kwargs.pop("headers", None) or {})
-                if "Authorization" not in headers:
-                    headers.update(admin_auth_headers())
-                return _patch(url, headers=headers, **kwargs)
+        def patch_with_admin(url, **kwargs):
+            headers = dict(kwargs.pop("headers", None) or {})
+            if "Authorization" not in headers:
+                headers.update(admin_auth_headers())
+            return _patch(url, headers=headers, **kwargs)
 
-            command_client.post = post_with_admin  # type: ignore[method-assign]
-            command_client.patch = patch_with_admin  # type: ignore[method-assign]
-            yield {"command": command_client, "query": query_client}
+        command_client.post = post_with_admin  # type: ignore[method-assign]
+        command_client.patch = patch_with_admin  # type: ignore[method-assign]
+        yield {"command": command_client, "query": query_client}
 
     dispose_engine(command_engine)
     dispose_engine(query_engine)
@@ -122,3 +125,24 @@ def admin_headers():
 @pytest.fixture
 def player_headers():
     return player_auth_headers()
+
+
+@pytest.fixture
+def raw_client():
+    """Test clients without auto-injected admin auth on POST/PATCH."""
+    from cqrs.command_service.app.db import engine as command_engine
+    from cqrs.query_service.app.db import engine as query_engine
+
+    sync_truncate_database("cqrs_command_test")
+    sync_truncate_database("cqrs_query_test")
+    dispose_engine(command_engine)
+    dispose_engine(query_engine)
+
+    with (
+        TestClient(command_app) as command_client,
+        TestClient(query_app) as query_client,
+    ):
+        yield {"command": command_client, "query": query_client}
+
+    dispose_engine(command_engine)
+    dispose_engine(query_engine)

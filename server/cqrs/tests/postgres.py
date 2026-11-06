@@ -6,7 +6,7 @@ import os
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy import MetaData, text
+from sqlalchemy import MetaData
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -79,4 +79,3 @@ def create_postgres_engine(database: str) -> AsyncEngine:
 
 def dispose_engine(engine: AsyncEngine) -> None:
     engine.sync_engine.dispose()
-

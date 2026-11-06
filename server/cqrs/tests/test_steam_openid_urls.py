@@ -12,8 +12,12 @@ class _FakeRequest:
 
 
 def test_force_http_for_localhost_https():
-    assert _force_http_for_local_dev("https://localhost:5173") == "http://localhost:5173"
-    assert _force_http_for_local_dev("https://127.0.0.1:8001") == "http://127.0.0.1:8001"
+    assert (
+        _force_http_for_local_dev("https://localhost:5173") == "http://localhost:5173"
+    )
+    assert (
+        _force_http_for_local_dev("https://127.0.0.1:8001") == "http://127.0.0.1:8001"
+    )
 
 
 def test_resolve_steam_openid_urls_from_forwarded_headers(monkeypatch):
@@ -27,4 +31,4 @@ def test_resolve_steam_openid_urls_from_forwarded_headers(monkeypatch):
     )
     realm, return_to = resolve_steam_openid_urls(request)
     assert realm == "http://localhost:5173"
-    assert return_to == "http://localhost:5173/api/v1/auth/steam/callback"
+    assert return_to == "http://localhost:5173/api/auth/steam/callback"

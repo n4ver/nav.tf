@@ -26,13 +26,32 @@ def test_upload_flow_returns_accepted_and_query_endpoint_lists_match(client):
     assert len(matches) == 1
     assert matches[0]["map_name"] == "cp_process_final"
     assert matches[0]["winning_team"] == "blu"
+    assert matches[0]["blu_score"] == 2
+    assert matches[0]["red_score"] == 1
 
     match_detail = client["query"].get(f"/api/v1/queries/matches/{body['match_id']}")
     assert match_detail.status_code == 200
     detail = match_detail.json()
     assert detail["match_summary"]["match_id"] == body["match_id"]
+    assert detail["match_summary"]["blu_score"] == 2
+    assert detail["match_summary"]["red_score"] == 1
     assert len(detail["players"]) == 2
     assert detail["match_summary"]["ratings_ready"] is True
+    player = next(p for p in detail["players"] if p["steam_id"] == sid(steam_id))
+    assert "class_stats" in player
+    assert player["class_stats"]
+    assert player["class_stats"][0]["class_name"] == "scout"
+    assert "damage_received" in player
+    assert "ubers" in player
+    assert "drops" in player
+    assert "captures" in player
+    assert "headshots" in player
+    assert "backstabs" in player
+    assert "airshots" in player
+    assert "captures" not in player["class_stats"][0]
+    assert "airshots" not in player["class_stats"][0]
+    assert "ubers" not in player["class_stats"][0]
+    assert "drops" not in player["class_stats"][0]
 
     player_stats = client["query"].get(f"/api/v1/queries/players/{steam_id}/stats")
     assert player_stats.status_code == 200
@@ -118,7 +137,9 @@ def test_ingest_logstf_maps_404(client, monkeypatch):
     from fastapi import HTTPException
 
     async def fake_fetch(_self, logstf_id: int):
-        raise HTTPException(status_code=404, detail=f"logs.tf log not found: {logstf_id}")
+        raise HTTPException(
+            status_code=404, detail=f"logs.tf log not found: {logstf_id}"
+        )
 
     monkeypatch.setattr(
         "cqrs.command_service.app.services.CommandService._fetch_logs_tf_json",
@@ -163,7 +184,9 @@ def test_ingest_cached_log_projects_match(client):
         },
     }
 
-    response = client["command"].post("/api/v1/commands/logs/ingest-cached", json=payload)
+    response = client["command"].post(
+        "/api/v1/commands/logs/ingest-cached", json=payload
+    )
     assert response.status_code == 202
     body = response.json()
     assert body["status"] == "accepted"
@@ -237,6 +260,7 @@ def _seed_two_player_match(
                     "heal": 0,
                     "dt": 4200,
                     "hr": 3100,
+                    "cpc": 2,
                     "class_stats": [
                         {
                             "type": "scout",
@@ -245,7 +269,6 @@ def _seed_two_player_match(
                             "assists": 3,
                             "dmg": scout_kills * 350,
                             "total_time": 1500,
-                            "cpc": 2,
                             "weapon": {"primary": {"acc": 0.42}},
                         }
                     ],
@@ -258,6 +281,7 @@ def _seed_two_player_match(
                     "heal": 0,
                     "dt": 5100,
                     "hr": 2800,
+                    "cpc": 1,
                     "class_stats": [
                         {
                             "type": "soldier",
@@ -266,7 +290,6 @@ def _seed_two_player_match(
                             "assists": 1,
                             "dmg": soldier_kills * 300,
                             "total_time": 1500,
-                            "cpc": 1,
                             "weapon": {"primary": {"acc": 0.31}},
                         }
                     ],
@@ -276,7 +299,9 @@ def _seed_two_player_match(
     }
     if timestamp:
         payload["timestamp"] = timestamp
-    response = client["command"].post("/api/v1/commands/logs/ingest-cached", json=payload)
+    response = client["command"].post(
+        "/api/v1/commands/logs/ingest-cached", json=payload
+    )
     assert response.status_code == 202
     return response.json()
 
@@ -304,8 +329,12 @@ def test_upload_is_idempotent_by_content_hash(client):
 
 
 def test_leaderboard_ratings_class_breakdown_and_search(client):
-    body = _seed_two_player_match(client, log_id=4037400, scout_kills=14, soldier_kills=5)
-    tournament_id = client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
+    body = _seed_two_player_match(
+        client, log_id=4037400, scout_kills=14, soldier_kills=5
+    )
+    tournament_id = (
+        client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
+    )
 
     leaderboard = client["query"].get(
         f"/api/v1/queries/tournaments/{tournament_id}/leaderboard"
@@ -314,7 +343,10 @@ def test_leaderboard_ratings_class_breakdown_and_search(client):
     entries = leaderboard.json()
     assert len(entries) == 2
     assert entries[0]["average_rating"] >= entries[1]["average_rating"]
-    assert {entry["steam_id"] for entry in entries} == {sid("STEAM_1:1:11111"), sid("STEAM_1:1:22222")}
+    assert {entry["steam_id"] for entry in entries} == {
+        sid("STEAM_1:1:11111"),
+        sid("STEAM_1:1:22222"),
+    }
 
     scout_board = client["query"].get(
         f"/api/v1/queries/tournaments/{tournament_id}/leaderboard",
@@ -330,8 +362,18 @@ def test_leaderboard_ratings_class_breakdown_and_search(client):
     assert len(player["class_breakdown"]) == 1
     assert player["class_breakdown"][0]["class_name"] == "scout"
 
-    match_detail = client["query"].get(f"/api/v1/queries/matches/{body['match_id']}").json()
+    match_detail = (
+        client["query"].get(f"/api/v1/queries/matches/{body['match_id']}").json()
+    )
     assert all("rating" in row for row in match_detail["players"])
+    scout = next(
+        p for p in match_detail["players"] if p["steam_id"] == sid("STEAM_1:1:11111")
+    )
+    assert scout["captures"] == 2
+    assert all("captures" not in row for row in scout["class_stats"])
+    assert all("airshots" not in row for row in scout["class_stats"])
+    assert all("ubers" not in row for row in scout["class_stats"])
+    assert all("drops" not in row for row in scout["class_stats"])
 
     benchmarks = client["query"].get("/api/v1/queries/benchmarks/class-rating")
     assert benchmarks.status_code == 200
@@ -347,7 +389,9 @@ def test_leaderboard_ratings_class_breakdown_and_search(client):
     assert by_log.json()[0]["kind"] == "log"
     assert by_log.json()[0]["match_id"] == body["match_id"]
 
-    by_player = client["query"].get("/api/v1/queries/search", params={"q": "STEAM_1:1:11111"})
+    by_player = client["query"].get(
+        "/api/v1/queries/search", params={"q": "STEAM_1:1:11111"}
+    )
     assert by_player.status_code == 200
     assert by_player.json()[0]["kind"] == "player"
 
@@ -374,7 +418,10 @@ def test_player_stats_includes_recent_matches(client):
     assert stats["matches_played"] == 2
     recent = stats["recent_matches"]
     assert len(recent) == 2
-    assert {row["match_id"] for row in recent} == {first["match_id"], second["match_id"]}
+    assert {row["match_id"] for row in recent} == {
+        first["match_id"],
+        second["match_id"],
+    }
     assert all(row["team"] == "blu" for row in recent)
     assert all("rating" in row for row in recent)
     assert all("map_name" in row for row in recent)
@@ -391,7 +438,9 @@ def test_benchmark_rebuild_idempotent(client):
     first_rows = first.json()
     assert first_rows
     first_by_class = {row["class_id"]: row for row in first_rows}
-    first_player = client["query"].get("/api/v1/queries/players/STEAM_1:1:11111/stats").json()
+    first_player = (
+        client["query"].get("/api/v1/queries/players/STEAM_1:1:11111/stats").json()
+    )
 
     # Second ingest (distinct payload) triggers another full rebuild_ratings pass.
     _seed_two_player_match(client, log_id=4037602, scout_kills=15, soldier_kills=8)
@@ -411,7 +460,9 @@ def test_benchmark_rebuild_idempotent(client):
         assert after["sample_size"] >= before["sample_size"]
         assert 0.0 <= after["avg_rating"] <= 2.0
 
-    second_player = client["query"].get("/api/v1/queries/players/STEAM_1:1:11111/stats").json()
+    second_player = (
+        client["query"].get("/api/v1/queries/players/STEAM_1:1:11111/stats").json()
+    )
     assert second_player["matches_played"] == first_player["matches_played"] + 1
     assert 0.0 <= second_player["average_rating"] <= 2.0
 
@@ -465,12 +516,23 @@ def test_cached_ingest_content_hash_dedup(client):
 
 def test_search_multiple_results(client):
     _seed_two_player_match(client, log_id=4037801, scout_kills=10, soldier_kills=5)
-    body = _seed_two_player_match(client, log_id=4037802, scout_kills=16, soldier_kills=9)
+    body = _seed_two_player_match(
+        client, log_id=4037802, scout_kills=16, soldier_kills=9
+    )
 
-    # Partial SteamID prefix matches both players.
+    client["command"].post(
+        "/api/v1/commands/players/display-name",
+        json={"steam_id": "STEAM_1:1:11111", "display_name": "Searchable Alpha"},
+    )
+    client["command"].post(
+        "/api/v1/commands/players/display-name",
+        json={"steam_id": "STEAM_1:1:22222", "display_name": "Searchable Beta"},
+    )
+
+    # Shared display-name prefix matches both players (canonical steam IDs are all-digit).
     response = client["query"].get(
         "/api/v1/queries/search",
-        params={"q": "STEAM_1:1:", "limit": 5},
+        params={"q": "Searchable", "limit": 5},
     )
     assert response.status_code == 200
     results = response.json()
@@ -480,7 +542,9 @@ def test_search_multiple_results(client):
     assert "player" in kinds
 
     # Exact log ID still returns a typed, ordered result suitable for UI disambiguation.
-    by_log = client["query"].get("/api/v1/queries/search", params={"q": "4037802", "limit": 5})
+    by_log = client["query"].get(
+        "/api/v1/queries/search", params={"q": "4037802", "limit": 5}
+    )
     assert by_log.status_code == 200
     log_results = by_log.json()
     assert len(log_results) >= 1
@@ -489,8 +553,10 @@ def test_search_multiple_results(client):
 
 
 def test_async_ratings_ready_after_rebuild_event(client):
-    """In-memory broker processes MatchParsed then RatingsRebuildRequested before return."""
-    body = _seed_two_player_match(client, log_id=4037901, scout_kills=14, soldier_kills=6)
+    """In-memory broker processes MatchParsed with inline rating rebuild before return."""
+    body = _seed_two_player_match(
+        client, log_id=4037901, scout_kills=14, soldier_kills=6
+    )
     match_id = body["match_id"]
 
     detail = client["query"].get(f"/api/v1/queries/matches/{match_id}").json()
@@ -534,7 +600,9 @@ def test_display_name_from_logs_tf_names(client):
             },
         },
     }
-    response = client["command"].post("/api/v1/commands/logs/ingest-cached", json=payload)
+    response = client["command"].post(
+        "/api/v1/commands/logs/ingest-cached", json=payload
+    )
     assert response.status_code == 202
     match_id = response.json()["match_id"]
 
@@ -544,10 +612,14 @@ def test_display_name_from_logs_tf_names(client):
     player = client["query"].get("/api/v1/queries/players/STEAM_1:1:55555/stats").json()
     assert player["display_name"] == "Tomahawk"
 
-    tournament_id = client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
-    board = client["query"].get(
-        f"/api/v1/queries/tournaments/{tournament_id}/leaderboard"
-    ).json()
+    tournament_id = (
+        client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
+    )
+    board = (
+        client["query"]
+        .get(f"/api/v1/queries/tournaments/{tournament_id}/leaderboard")
+        .json()
+    )
     assert board[0]["display_name"] == "Tomahawk"
 
 
@@ -591,8 +663,12 @@ def test_upload_uses_stable_default_tournament_id(client):
 
 
 def test_leaderboard_reads_from_snapshot(client):
-    body = _seed_two_player_match(client, log_id=4038001, scout_kills=18, soldier_kills=5)
-    tournament_id = client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
+    body = _seed_two_player_match(
+        client, log_id=4038001, scout_kills=18, soldier_kills=5
+    )
+    tournament_id = (
+        client["query"].get("/api/v1/queries/tournaments").json()[0]["tournament_id"]
+    )
 
     leaderboard = client["query"].get(
         f"/api/v1/queries/tournaments/{tournament_id}/leaderboard"
@@ -618,9 +694,11 @@ def test_leaderboard_reads_from_snapshot(client):
 
     # Second rebuild must not duplicate snapshot rows for the same players.
     _seed_two_player_match(client, log_id=4038002, scout_kills=20, soldier_kills=7)
-    again = client["query"].get(
-        f"/api/v1/queries/tournaments/{tournament_id}/leaderboard"
-    ).json()
+    again = (
+        client["query"]
+        .get(f"/api/v1/queries/tournaments/{tournament_id}/leaderboard")
+        .json()
+    )
     steam_ids = [row["steam_id"] for row in again]
     assert len(steam_ids) == len(set(steam_ids))
     assert body["match_id"]

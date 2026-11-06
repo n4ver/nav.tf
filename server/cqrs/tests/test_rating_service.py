@@ -8,11 +8,11 @@ from pathlib import Path
 SERVER_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SERVER_ROOT))
 
-from cqrs.shared.rating import (  # noqa: E402
+from cqrs.query_service.app.rating import (
     RatingService,
-    class_id_from_name,
     rating_row_from_mapping,
 )
+from cqrs.shared.tf2_classes import class_id_from_name
 
 
 def test_feature_columns_match_monolith():
