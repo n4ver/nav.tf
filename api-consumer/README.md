@@ -121,8 +121,8 @@ Ingested matcha logs are tagged with one tournament so they appear together in t
 cd api-consumer
 cp .env.example .env
 
-# Requires RabbitMQ (from server/dev-setup/docker/docker-compose.yml)
-cd ../server && docker compose up -d rabbitmq
+# Requires RabbitMQ (from the root compose.yaml)
+(cd .. && docker compose up -d rabbitmq)
 
 cd ../api-consumer
 npm install
@@ -132,12 +132,13 @@ npm start
 
 ## Run with Docker
 
+From the repository root:
+
 ```bash
-cd server
 docker compose --profile consumer up -d api-consumer
 ```
 
-Environment variables are set in [docker-compose.yml](../server/dev-setup/docker/docker-compose.yml).
+Environment variables are set in [compose.yaml](../compose.yaml).
 
 ## HTTP endpoints
 
@@ -164,7 +165,7 @@ curl -X POST http://localhost:8010/admin/poll \
 
 ```bash
 npm test              # unit tests
-npm run test:coverage # tests + HTML report in server/dev-setup/javascript/coverage/api-consumer/
+npm run test:coverage # tests + HTML report in coverage/
 ```
 
 Fixtures in `tests/fixtures/` include real-shaped matcha and logs.tf responses.
@@ -173,4 +174,4 @@ Fixtures in `tests/fixtures/` include real-shaped matcha and logs.tf responses.
 
 - [Architecture](../docs/architecture.md)
 - [Query service](../server/cqrs/query_service/README.md)
-- [Server Docker Compose](../server/dev-setup/docker/docker-compose.yml)
+- [Local Docker Compose](../compose.yaml)

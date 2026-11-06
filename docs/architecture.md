@@ -53,7 +53,7 @@ This document describes the system architecture for TF2 Analytics: a platform th
 | **Query service** | `server/cqrs/query_service/` | 8002 | `cqrs_query` | Read model, projections, leaderboards, search |
 | **API consumer** | `api-consumer/` | 8010 | — | External auto-ingest (matcha.tf → logs.tf → RabbitMQ) |
 
-Shared infrastructure runs via `server/dev-setup/docker/docker-compose.yml` (included from `server/docker-compose.yml`): **Postgres 15** (port 5432) and **RabbitMQ 3.11** (AMQP 5672, management UI 15672).
+Shared infrastructure runs via the root `compose.yaml`: **Postgres 15** (port 5432) and **RabbitMQ 3.11** (AMQP 5672, management UI 15672).
 
 ## CQRS boundaries
 
@@ -202,7 +202,7 @@ Single Postgres instance, multiple logical databases:
 | `cqrs_query` | Read projections |
 | `cqrs_command_test` / `cqrs_query_test` | pytest isolation |
 
-Init scripts: `server/dev-setup/docker/postgres/init-cqrs-databases.sql` (first boot) and `ensure-cqrs-databases.sh` (idempotent via `db-init` service). Test DBs: `server/cqrs/tests/postgres/`.
+The one-shot `db-init` service creates them idempotently: `deploy/postgres/ensure-cqrs-databases.sh` (shared with production) and `server/cqrs/tests/ensure-test-databases.sh`.
 
 ## Rating pipeline
 
@@ -226,11 +226,10 @@ The `RatingsRebuildRequested` / `RatingsRebuilt` events are legacy compatibility
 ### Local development (recommended)
 
 ```bash
-cd server
-docker compose up -d db rabbitmq command-service query-service
-python dev-setup/seed/seed_cqrs.py --http
+docker compose up -d db rabbitmq command-service query-service   # repo root
+(cd server && python seed/seed_cqrs.py --http)
 
-cd ../web && npm install && npm run dev
+cd web && npm install && npm run dev
 ```
 
 Optional external ingest:
@@ -264,10 +263,9 @@ Known limits of the single-VM setup:
 | Layer | Technologies |
 |---|---|
 | Frontend | Vue 3, Vue Router, Pinia, Axios, Tailwind CSS 4, Vite 8, Vitest |
-| Command / Query | Python 3.12, FastAPI, SQLModel, SQLAlchemy 2, asyncpg, aio-pika, PyJWT, httpx |
+| Command / Query | Python 3.13, FastAPI, SQLModel, SQLAlchemy 2, asyncpg, aio-pika, PyJWT, httpx |
 | API consumer | Node 20, Express, amqplib, node-cron, opossum, pino, Jest |
 | Infrastructure | Docker Compose, Postgres 15, RabbitMQ 3.11 |
-| Experiments | Jupyter (`classifier/`) |
 
 ## Related documentation
 

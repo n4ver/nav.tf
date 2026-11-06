@@ -1,4 +1,5 @@
-# Production image for the command and query services (one image, two commands).
+# Image for the command and query services (one image, two commands). Production
+# (deploy/compose.prod.yml) and local development (compose.yaml) both build it.
 # Build from the repo root:
 #   docker build -f deploy/docker/server.Dockerfile -t navtf/server .
 FROM python:3.13-slim
@@ -18,7 +19,7 @@ RUN pip install -r requirements.txt
 
 COPY server/cqrs ./cqrs
 # Seed tooling + cache for the optional one-shot `seed` compose profile.
-COPY server/dev-setup/seed ./dev-setup/seed
+COPY server/seed ./seed
 COPY server/data/seed_logs_cache.json ./data/seed_logs_cache.json
 
 USER app

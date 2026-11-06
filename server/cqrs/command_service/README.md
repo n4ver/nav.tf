@@ -82,17 +82,17 @@ Routing key format: `events.{EventType}` (e.g. `events.MatchParsed`).
 
 ## Run
 
-**Docker:**
+**Docker** (from the repository root):
 
 ```bash
-cd server
 docker compose up -d command-service
 ```
 
-**Local:**
+**Local** (Postgres and RabbitMQ from the root `compose.yaml`, service from `server/`):
 
 ```bash
-docker compose up -d db rabbitmq
+docker compose up -d db db-init rabbitmq
+cd server
 uvicorn cqrs.command_service.app.main:app --host 127.0.0.1 --port 8001 --reload
 ```
 

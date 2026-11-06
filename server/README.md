@@ -1,112 +1,112 @@
-# TF2 Analytics — Server
+# nav.tf — Server
 
-Python backend for TF2 Analytics. The stack is **CQRS microservices** (command + query) backed by Postgres and RabbitMQ.
+Python backend for nav.tf: **CQRS microservices** (command + query) backed by Postgres and RabbitMQ.
 
 See [Architecture design](../docs/architecture.md) for the full system overview.
 
-Developer tooling (Docker, tests, coverage, seed scripts) lives in **[dev-setup/](dev-setup/README.md)**.
+## Layout
 
-## Services
+```text
+server/
+  cqrs/
+    command_service/   Write API, Steam auth, ingest, outbox → RabbitMQ   (:8001)
+    query_service/     Event consumer, projections, ratings, read API      (:8002)
+    shared/            Contracts, auth, broker, settings used by both
+    tests/             pytest suite (+ ensure-test-databases.sh)
+  data/                seed_logs_cache.json (sample logs.tf payloads)
+  seed/                seed_cqrs.py, build_seed_cache.py, invite.txt
+  requirements.txt     runtime dependencies (used by the Docker image)
+  requirements-dev.txt runtime + pytest
+  pyproject.toml       same dependencies for uv (uv.lock)
+  pytest.ini           test + coverage settings (.coveragerc: 80% gate)
+```
 
 | Service | Port | Path | README |
 |---|---|---|---|
 | Command (write) | 8001 | `cqrs/command_service/` | [README](cqrs/command_service/README.md) |
 | Query (read) | 8002 | `cqrs/query_service/` | [README](cqrs/query_service/README.md) |
 
-## Quick start
+The Docker image is [`deploy/docker/server.Dockerfile`](../deploy/docker/server.Dockerfile), shared by local development and production.
+
+## Run with Docker
+
+The local stack is defined in the root [`compose.yaml`](../compose.yaml). From the repository root:
 
 ```bash
-cd server
-docker compose up -d --build
+cp .env.example .env
+docker compose up -d --build                 # db, rabbitmq, services, gateway (:8095), web (:5173)
+docker compose --profile seed run --rm seed  # load sample matches
 ```
 
-This starts Postgres, RabbitMQ, command service, query service, gateway (:8095), and the web dev container.
-
-Minimal backend (no web container):
+Backend only:
 
 ```bash
 docker compose up -d db rabbitmq command-service query-service
-python dev-setup/seed/seed_cqrs.py --http
 ```
 
-## Docker Compose
-
-Canonical file: [dev-setup/docker/docker-compose.yml](dev-setup/docker/docker-compose.yml)  
-Root stub: [docker-compose.yml](docker-compose.yml) (includes the dev-setup compose file)
-
-| Service | Always runs | Port | Notes |
+| Service | Runs by default | Port | Notes |
 |---|---|---|---|
 | `db` | Yes | 5432 | Postgres 15; default DB `cqrs_command` |
-| `db-init` | Yes | — | One-shot; ensures databases exist on existing volumes |
+| `db-init` | Yes | — | One-shot; creates `cqrs_query` and the test databases |
 | `rabbitmq` | Yes | 5672, 15672 | AMQP + management UI |
-| `command-service` | Yes | 8001 | Write API |
+| `command-service` | Yes | 8001 | Write API (mounts `server/cqrs`, auto-reload) |
 | `query-service` | Yes | 8002 | Read API + event consumer |
-| `gateway` | Yes | 8095 | Nginx API gateway |
-| `web` | Yes | 5173 | Vite dev server (mounts `../web`) |
-| `api-consumer` | Profile `consumer` | 8010 | External auto-ingest |
-| `seed` | Profile `seed` | — | One-shot CQRS seed |
+| `gateway` | Yes | 8095 | Nginx, same paths as production Caddy ([`dev/nginx.conf`](../dev/nginx.conf)) |
+| `web` | Yes | 5173 | Vite dev server |
+| `api-consumer` | Profile `consumer` | 8010 | matcha.tf auto-ingest |
+| `seed` | Profile `seed` | — | One-shot seed through the command API |
 
-### Profiles
+## Run on the host
 
-```bash
-docker compose --profile consumer up -d api-consumer
-docker compose --profile seed run --rm seed
-```
-
-## Seeding
-
-Seed data comes from [data/seed_logs_cache.json](data/seed_logs_cache.json), built from log IDs in [dev-setup/seed/invite.txt](dev-setup/seed/invite.txt).
+Infrastructure from Docker, services from `server/`:
 
 ```bash
-python dev-setup/seed/seed_cqrs.py --http
-python dev-setup/seed/seed_cqrs.py --http --reset
-python dev-setup/seed/seed_cqrs.py --http --limit 10
-```
+docker compose up -d db db-init rabbitmq     # repo root
 
-Rebuild the cache from logs.tf:
-
-```bash
-python dev-setup/seed/build_seed_cache.py
-python dev-setup/seed/build_seed_cache.py --skip-fetch
-```
-
-## Local development (host Python)
-
-```bash
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-
-docker compose up -d db rabbitmq
+cd server
+python -m venv .venv
+source .venv/bin/activate                    # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
 
 uvicorn cqrs.command_service.app.main:app --host 127.0.0.1 --port 8001 --reload
 uvicorn cqrs.query_service.app.main:app --host 127.0.0.1 --port 8002 --reload
 ```
 
-## Environment
+The services read configuration from environment variables only; [`../.env.example`](../.env.example) lists them with local defaults. Inside Docker the database host is `db` instead of `127.0.0.1`.
 
-Copy [dev-setup/env/.env.example](dev-setup/env/.env.example) to `.env` for local overrides.
+## Seeding
 
-Inside Docker Compose, database host is `db` instead of `127.0.0.1`.
+Seed data comes from [data/seed_logs_cache.json](data/seed_logs_cache.json), built from the log IDs in [seed/invite.txt](seed/invite.txt). From `server/`:
+
+```bash
+python seed/seed_cqrs.py --http
+python seed/seed_cqrs.py --http --reset
+python seed/seed_cqrs.py --http --limit 10
+```
+
+Rebuild the cache from logs.tf:
+
+```bash
+python seed/build_seed_cache.py
+python seed/build_seed_cache.py --skip-fetch
+```
 
 ## Tests
 
+Needs the Docker Postgres (`docker compose up -d db db-init` from the repo root). From `server/`:
+
 ```bash
-docker compose up -d db db-init
 pip install -r requirements-dev.txt
-python -m pytest -c dev-setup/python/pytest.ini cqrs/tests -q
-python -m pytest -c dev-setup/python/pytest.ini cqrs/tests -q --no-cov
+python -m pytest -q             # with coverage (fails under 80%)
+python -m pytest -q --no-cov
 ```
 
-Coverage reports: `dev-setup/python/htmlcov/` (HTML) and `dev-setup/python/coverage.xml` (CI).  
-Minimum line coverage: 80% (see [dev-setup/python/.coveragerc](dev-setup/python/.coveragerc)).
-
-Test database init: [cqrs/tests/postgres/](cqrs/tests/postgres/).
+Coverage reports land in `htmlcov/` and `coverage.xml` (both gitignored).
 
 ## Related docs
 
-- [dev-setup/](dev-setup/README.md) — Docker, pytest, coverage, seed tooling
 - [Architecture](../docs/architecture.md)
 - [CQRS overview](cqrs/README.md)
 - [API consumer](../api-consumer/README.md)
 - [Web dashboard](../web/README.md)
+- [Production deployment](../deploy/README.md)

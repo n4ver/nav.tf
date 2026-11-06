@@ -219,5 +219,5 @@ async def health() -> dict[str, object]:
         "match_count": match_count,
         "repair_hint": None
         if db_reachable
-        else "Check Postgres connectivity, then run: python dev-setup/seed/seed_cqrs.py --http --reset",
+        else "Check Postgres connectivity, then run: python seed/seed_cqrs.py --http --reset",
     }

@@ -40,15 +40,18 @@ jobs:
           cache-dependency-path: |
             server/requirements.txt
             server/requirements-dev.txt
-            server/dev-setup/python/requirements-dev.txt
       - name: Create test databases
-        run: psql -h 127.0.0.1 -U user -d cqrs_command -v ON_ERROR_STOP=1 -f server/cqrs/tests/postgres/init-test-databases.sql
+        env:
+          PGHOST: 127.0.0.1
+          POSTGRES_USER: user
+          POSTGRES_DB: cqrs_command
+        run: bash server/cqrs/tests/ensure-test-databases.sh
       - name: Install dependencies
         working-directory: server
         run: pip install -r requirements-dev.txt
       - name: Run tests (80% coverage gate)
         working-directory: server
-        run: python -m pytest -c dev-setup/python/pytest.ini -q
+        run: python -m pytest -q
 
   api-consumer:
     name: api-consumer (jest)

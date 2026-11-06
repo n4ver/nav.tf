@@ -2,11 +2,11 @@
 
 Default path (Docker / local microservices):
   docker compose up -d db rabbitmq command-service query-service
-  python dev-setup/seed/seed_cqrs.py --http
+  python seed/seed_cqrs.py --http
   # or: docker compose --profile seed run --rm seed
 
 Direct path (no HTTP/RabbitMQ; writes Postgres through in-process handlers):
-  python dev-setup/seed/seed_cqrs.py --direct
+  python seed/seed_cqrs.py --direct
 """
 
 from __future__ import annotations
@@ -22,10 +22,8 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-SERVER_ROOT = Path(__file__).resolve().parents[2]
-DEV_SETUP_DIR = Path(__file__).resolve().parent
+SERVER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVER_ROOT))
-sys.path.insert(0, str(SERVER_ROOT / "dev-setup"))
 
 CACHE_FILE = SERVER_ROOT / "data" / "seed_logs_cache.json"
 COMMAND_SERVICE_URL = os.getenv("COMMAND_SERVICE_URL", "http://127.0.0.1:8001").rstrip(
@@ -63,7 +61,7 @@ def _load_logs(cache_path: Path, limit: int | None) -> list[dict]:
     if not cache_path.exists():
         raise SystemExit(
             f"Cache file not found: {cache_path}\n"
-            "Build it first with: python dev-setup/seed/build_seed_cache.py"
+            "Build it first with: python seed/build_seed_cache.py"
         )
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     logs = payload.get("logs", [])
@@ -209,7 +207,7 @@ async def _verify_command_service(client: httpx.AsyncClient, url: str) -> None:
                     raise CommandServiceUnavailable(
                         f"Command service at {url} is running old code without "
                         "/api/v1/commands/logs/ingest-cached. Rebuild/restart it, or run:\n"
-                        "  python dev-setup/seed/seed_cqrs.py --direct"
+                        "  python seed/seed_cqrs.py --direct"
                     )
             print(f"Command service ready at {url}")
             return
@@ -375,9 +373,9 @@ async def seed_http(
             print(
                 "Some commands did not project to the query Postgres DB. "
                 "Ensure RabbitMQ is healthy, then retry:\n"
-                "  python dev-setup/seed/seed_cqrs.py --http\n"
+                "  python seed/seed_cqrs.py --http\n"
                 "or seed in-process:\n"
-                "  python dev-setup/seed/seed_cqrs.py --direct --force"
+                "  python seed/seed_cqrs.py --direct --force"
             )
             raise SystemExit(1)
 
@@ -398,7 +396,7 @@ async def seed_direct(
             raise SystemExit(
                 "Query service is running on port 8002. Prefer HTTP seeding so RabbitMQ "
                 "projections stay consistent:\n"
-                "  python dev-setup/seed/seed_cqrs.py --http\n"
+                "  python seed/seed_cqrs.py --http\n"
                 "Or pass --force to write Postgres directly while services are up."
             )
 
