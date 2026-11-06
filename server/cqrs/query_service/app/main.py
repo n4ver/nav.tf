@@ -12,6 +12,8 @@ from ...shared.broker import close_broker
 from ...shared.cors import add_cors_middleware
 from ...shared.schemas import (
     ClassRatingBenchmarkView,
+    EventDetailView,
+    EventSummaryView,
     LeaderboardEntryView,
     MatchSummaryView,
     PlayerLifetimeStatsView,
@@ -40,7 +42,9 @@ add_cors_middleware(app)
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+async def unhandled_exception_handler(
+    _request: Request, exc: Exception
+) -> JSONResponse:
     logger.exception("Unhandled query service error")
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
@@ -50,10 +54,16 @@ async def list_matches(
     skip: int = 0,
     limit: int = 20,
     tournament_id: str | None = None,
+    event_id: str | None = None,
     session: AsyncSession = Depends(get_read_session),
 ) -> list[MatchSummaryView]:
     service = ProjectionService(session)
-    return await service.list_matches(skip=skip, limit=min(limit, 100), tournament_id=tournament_id)
+    return await service.list_matches(
+        skip=skip,
+        limit=min(limit, 100),
+        tournament_id=tournament_id,
+        event_id=event_id,
+    )
 
 
 @app.get("/api/v1/queries/matches/{match_id}")
@@ -94,7 +104,50 @@ async def get_tournament_leaderboard(
     )
 
 
-@app.get("/api/v1/queries/players/{steam_id}/stats", response_model=PlayerLifetimeStatsView)
+@app.get("/api/v1/queries/events", response_model=list[EventSummaryView])
+async def list_events(
+    session: AsyncSession = Depends(get_read_session),
+) -> list[EventSummaryView]:
+    service = ProjectionService(session)
+    return await service.list_events()
+
+
+@app.get("/api/v1/queries/events/{event_id}", response_model=EventDetailView)
+async def get_event(
+    event_id: str,
+    session: AsyncSession = Depends(get_read_session),
+) -> EventDetailView:
+    service = ProjectionService(session)
+    event = await service.get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return event
+
+
+@app.get(
+    "/api/v1/queries/events/{event_id}/leaderboard",
+    response_model=list[LeaderboardEntryView],
+)
+async def get_event_leaderboard(
+    event_id: str,
+    class_name: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_read_session),
+) -> list[LeaderboardEntryView]:
+    service = ProjectionService(session)
+    event = await service.get_event(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Event not found")
+    return await service.get_event_leaderboard(
+        event_id=event_id,
+        class_name=class_name,
+        limit=limit,
+    )
+
+
+@app.get(
+    "/api/v1/queries/players/{steam_id}/stats", response_model=PlayerLifetimeStatsView
+)
 async def get_player_stats(
     steam_id: str,
     session: AsyncSession = Depends(get_read_session),
@@ -113,7 +166,10 @@ async def search(
     return await service.search(q, limit=limit)
 
 
-@app.get("/api/v1/queries/benchmarks/class-rating", response_model=list[ClassRatingBenchmarkView])
+@app.get(
+    "/api/v1/queries/benchmarks/class-rating",
+    response_model=list[ClassRatingBenchmarkView],
+)
 async def list_class_benchmarks(
     session: AsyncSession = Depends(get_read_session),
 ) -> list[ClassRatingBenchmarkView]:
@@ -128,7 +184,9 @@ async def health() -> dict[str, object]:
     try:
         async with SessionLocal() as session:
             match_count = (
-                await session.execute(select(func.count()).select_from(MatchSummaryProjection))
+                await session.execute(
+                    select(func.count()).select_from(MatchSummaryProjection)
+                )
             ).scalar_one()
         db_reachable = True
     except Exception as exc:  # noqa: BLE001 — surface connectivity in health payload
@@ -141,5 +199,5 @@ async def health() -> dict[str, object]:
         "match_count": match_count,
         "repair_hint": None
         if db_reachable
-        else "Check Postgres connectivity, then run: python seed_cqrs.py --http --reset",
+        else "Check Postgres connectivity, then run: python dev-setup/seed/seed_cqrs.py --http --reset",
     }

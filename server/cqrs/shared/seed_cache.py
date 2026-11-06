@@ -33,7 +33,9 @@ def _load_index(cache_file: str) -> dict[int, dict[str, Any]]:
     return index
 
 
-def get_cached_log_data(log_id: int, *, cache_path: Path | None = None) -> dict[str, Any]:
+def get_cached_log_data(
+    log_id: int, *, cache_path: Path | None = None
+) -> dict[str, Any]:
     path = cache_path or seed_cache_path()
     index = _load_index(str(path.resolve()))
     try:

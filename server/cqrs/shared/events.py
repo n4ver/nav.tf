@@ -48,3 +48,19 @@ class TournamentCreatedEvent(EventEnvelope):
 
 class TournamentUpdatedEvent(EventEnvelope):
     event_type: str = "TournamentUpdated"
+
+
+class EventCreatedEvent(EventEnvelope):
+    event_type: str = "EventCreated"
+
+
+class EventUpdatedEvent(EventEnvelope):
+    event_type: str = "EventUpdated"
+
+
+class TournamentLinkedToEventEvent(EventEnvelope):
+    event_type: str = "TournamentLinkedToEvent"
+
+
+class MatchTournamentAssignedEvent(EventEnvelope):
+    event_type: str = "MatchTournamentAssigned"

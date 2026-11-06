@@ -1,59 +1,18 @@
-"""Full notebook-aligned RatingService port for CQRS.
+"""Query-side rating bounded context — z-score math + class benchmarks.
 
-Pure math + dict/dataclass inputs — no write-side ORM coupling.
-Query projections supply MatchStat-equivalent rows; benchmarks are persisted
-on the read side and rebuilt during MatchParsed projection.
+Command service must never import this package. Class name helpers live in
+`cqrs.shared.tf2_classes`.
 """
 
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Mapping, Optional, Protocol, Sequence
+from typing import Any, ClassVar, Protocol
 
-from .timeutils import utcnow
-
-
-CLASS_MAP = {
-    "scout": 0,
-    "soldier": 1,
-    "pyro": 2,
-    "demoman": 3,
-    "heavyweapons": 4,
-    "engineer": 5,
-    "medic": 6,
-    "sniper": 7,
-    "spy": 8,
-}
-
-CLASS_ID_TO_NAME = {class_id: name for name, class_id in CLASS_MAP.items()}
-
-
-def normalize_class_name(raw: str | None) -> str:
-    value = (raw or "unknown").strip().lower()
-    aliases = {
-        "heavy": "heavyweapons",
-        "heavyweapons": "heavyweapons",
-        "demo": "demoman",
-        "demoman": "demoman",
-        "med": "medic",
-        "engi": "engineer",
-    }
-    return aliases.get(value, value or "unknown")
-
-
-def class_id_from_name(name: str | None) -> int:
-    return CLASS_MAP.get(normalize_class_name(name), 0)
-
-
-def class_name_from_id(class_id: int) -> str:
-    return CLASS_ID_TO_NAME.get(int(class_id), "unknown")
-
-
-def primary_class(classes_played: list[str] | None) -> str:
-    if not classes_played:
-        return "unknown"
-    return normalize_class_name(classes_played[0])
+from ....shared.tf2_classes import class_id_from_name, class_name_from_id
+from ....shared.timeutils import utcnow
 
 
 class MatchStatLike(Protocol):
@@ -123,7 +82,7 @@ def rating_row_from_mapping(data: Mapping[str, Any]) -> RatingStatRow:
 class RatingService:
     """Notebook-aligned z-score rating calculations (monolith port)."""
 
-    FEATURE_COLUMNS = [
+    FEATURE_COLUMNS: ClassVar[list[str]] = [
         "kills_per_min",
         "deaths_per_min",
         "dpm",
@@ -143,7 +102,7 @@ class RatingService:
         "medic_support_impact",
     ]
 
-    IMPACT_WEIGHTS = {
+    IMPACT_WEIGHTS: ClassVar[dict[str, float]] = {
         "z_kills_per_min": 0.26,
         "z_objective_per_min": 0.12,
         "z_damage_efficiency": 0.18,
@@ -154,12 +113,17 @@ class RatingService:
         "z_medic_support_impact": 0.10,
     }
 
-    CLASS_WEIGHTS = {
+    CLASS_WEIGHTS: ClassVar[dict[int, dict[str, float]]] = {
         0: {"k": 0.30, "d": 0.25, "s": 0.15, "i": 0.30},
         6: {"k": 0.01, "d": 0.01, "s": 0.18, "i": 0.80},
         7: {"k": 0.35, "d": 0.20, "s": 0.10, "i": 0.35},
     }
-    DEFAULT_WEIGHTS = {"k": 0.25, "d": 0.25, "s": 0.20, "i": 0.30}
+    DEFAULT_WEIGHTS: ClassVar[dict[str, float]] = {
+        "k": 0.25,
+        "d": 0.25,
+        "s": 0.20,
+        "i": 0.30,
+    }
 
     @staticmethod
     def _percentile(values: list[float], q: float) -> float:
@@ -183,7 +147,9 @@ class RatingService:
 
     @staticmethod
     def _safe_ratio(numerator: float, denominator: float) -> float:
-        return float(numerator) / float(denominator) if float(denominator) != 0.0 else 0.0
+        return (
+            float(numerator) / float(denominator) if float(denominator) != 0.0 else 0.0
+        )
 
     @staticmethod
     def row_features(row: RatingStatRow) -> dict[str, float]:
@@ -204,9 +170,15 @@ class RatingService:
         ubers_per_min = ubers / minutes
         drops_per_min = drops / minutes
 
-        damage_efficiency = RatingService._safe_ratio(damage_dealt_per_min, damage_received_per_min)
-        healing_efficiency = RatingService._safe_ratio(damage_received_per_min, heals_received_per_min)
-        kill_conversion = RatingService._safe_ratio(kills_per_min, damage_dealt_per_min) * 1000.0
+        damage_efficiency = RatingService._safe_ratio(
+            damage_dealt_per_min, damage_received_per_min
+        )
+        healing_efficiency = RatingService._safe_ratio(
+            damage_received_per_min, heals_received_per_min
+        )
+        kill_conversion = (
+            RatingService._safe_ratio(kills_per_min, damage_dealt_per_min) * 1000.0
+        )
         pressure_resistance = -damage_received_per_min
 
         medic_support_impact = (
@@ -256,14 +228,18 @@ class RatingService:
                 float(stds.get(col, 0.0)),
             )
 
-        z_medic_support_impact = z.get("z_medic_support_impact", 0.0) if class_id == 6 else 0.0
+        z_medic_support_impact = (
+            z.get("z_medic_support_impact", 0.0) if class_id == 6 else 0.0
+        )
         survival_score = -z.get("z_deaths_per_min", 0.0)
 
         impact_score = 0.0
         for col, weight in RatingService.IMPACT_WEIGHTS.items():
             impact_score += z.get(col, 0.0) * float(weight)
 
-        weights = RatingService.CLASS_WEIGHTS.get(class_id, RatingService.DEFAULT_WEIGHTS)
+        weights = RatingService.CLASS_WEIGHTS.get(
+            class_id, RatingService.DEFAULT_WEIGHTS
+        )
         raw = (
             (z.get("z_kills_per_min", 0.0) * float(weights["k"]))
             + (z.get("z_dpm", 0.0) * float(weights["d"]))
@@ -283,12 +259,16 @@ class RatingService:
         return max(0.0, min(2.0, round(normalized, 3)))
 
     @staticmethod
-    def build_class_benchmarks(rows: Sequence[RatingStatRow]) -> dict[int, dict[str, Any]]:
+    def build_class_benchmarks(
+        rows: Sequence[RatingStatRow],
+    ) -> dict[int, dict[str, Any]]:
         """Recompute per-class baselines from historical MatchStat-equivalent rows."""
         if not rows:
             return {}
 
-        class_feature_rows: dict[int, list[tuple[str, dict[str, float]]]] = defaultdict(list)
+        class_feature_rows: dict[int, list[tuple[str, dict[str, float]]]] = defaultdict(
+            list
+        )
         for row in rows:
             class_feature_rows[int(row.class_id)].append(
                 (str(row.steam_id or ""), RatingService.row_features(row))
@@ -311,9 +291,13 @@ class RatingService:
             player_class_scores: dict[str, list[float]] = defaultdict(list)
 
             for player_key, features in entries:
-                raw = RatingService.compute_raw_rating(class_id, features, feature_means, feature_stds)
+                raw = RatingService.compute_raw_rating(
+                    class_id, features, feature_means, feature_stds
+                )
                 raw_scores.append(raw)
-                player_class_scores[player_key or f"anon:{len(player_class_scores)}"].append(raw)
+                player_class_scores[
+                    player_key or f"anon:{len(player_class_scores)}"
+                ].append(raw)
 
             raw_p05 = RatingService._percentile(raw_scores, 0.05)
             raw_p95 = RatingService._percentile(raw_scores, 0.95)
@@ -321,9 +305,12 @@ class RatingService:
             player_avg_ratings: list[float] = []
             for raw_list in player_class_scores.values():
                 normalized = [
-                    RatingService.normalize_raw_rating(r, raw_p05, raw_p95) for r in raw_list
+                    RatingService.normalize_raw_rating(r, raw_p05, raw_p95)
+                    for r in raw_list
                 ]
-                player_avg_ratings.append(sum(normalized) / len(normalized) if normalized else 1.0)
+                player_avg_ratings.append(
+                    sum(normalized) / len(normalized) if normalized else 1.0
+                )
 
             if player_avg_ratings:
                 mean_rating = sum(player_avg_ratings) / len(player_avg_ratings)
@@ -340,13 +327,27 @@ class RatingService:
                 "raw_p95": float(raw_p95),
                 "avg_rating": round(float(mean_rating), 4),
                 "std_rating": round(float(std_rating), 4),
-                "min_rating": round(min(player_avg_ratings), 4) if player_avg_ratings else 0.0,
-                "max_rating": round(max(player_avg_ratings), 4) if player_avg_ratings else 0.0,
-                "p10_rating": round(RatingService._percentile(player_avg_ratings, 0.10), 4),
-                "p25_rating": round(RatingService._percentile(player_avg_ratings, 0.25), 4),
-                "p50_rating": round(RatingService._percentile(player_avg_ratings, 0.50), 4),
-                "p75_rating": round(RatingService._percentile(player_avg_ratings, 0.75), 4),
-                "p90_rating": round(RatingService._percentile(player_avg_ratings, 0.90), 4),
+                "min_rating": round(min(player_avg_ratings), 4)
+                if player_avg_ratings
+                else 0.0,
+                "max_rating": round(max(player_avg_ratings), 4)
+                if player_avg_ratings
+                else 0.0,
+                "p10_rating": round(
+                    RatingService._percentile(player_avg_ratings, 0.10), 4
+                ),
+                "p25_rating": round(
+                    RatingService._percentile(player_avg_ratings, 0.25), 4
+                ),
+                "p50_rating": round(
+                    RatingService._percentile(player_avg_ratings, 0.50), 4
+                ),
+                "p75_rating": round(
+                    RatingService._percentile(player_avg_ratings, 0.75), 4
+                ),
+                "p90_rating": round(
+                    RatingService._percentile(player_avg_ratings, 0.90), 4
+                ),
                 "metric_means": feature_means,
                 "metric_stds": feature_stds,
                 "updated_at": now,
@@ -355,7 +356,7 @@ class RatingService:
         return benchmarks
 
     @staticmethod
-    def score_row(row: RatingStatRow, benchmark: Optional[Mapping[str, Any]]) -> float:
+    def score_row(row: RatingStatRow, benchmark: Mapping[str, Any] | None) -> float:
         if not benchmark or int(benchmark.get("sample_size", 0)) < 1:
             return 1.0
 
@@ -376,5 +377,7 @@ class RatingService:
     ) -> list[float]:
         ratings: list[float] = []
         for row in rows:
-            ratings.append(RatingService.score_row(row, benchmark_map.get(int(row.class_id))))
+            ratings.append(
+                RatingService.score_row(row, benchmark_map.get(int(row.class_id)))
+            )
         return ratings

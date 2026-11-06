@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
+from uuid import UUID
 
-from sqlalchemy import Column, JSON, UniqueConstraint
+from sqlalchemy import JSON, Column, UniqueConstraint
 from sqlmodel import Field
 
 from ...shared.timeutils import utcnow
@@ -21,9 +22,9 @@ class MatchSummaryProjection(QuerySQLModel, table=True):
     duration_seconds: int
     winning_team: str
     date_played: datetime = Field(default_factory=utcnow, index=True)
-    blu_score: int = 0
-    red_score: int = 0
-    ratings_ready: bool = False
+    blu_score: int = Field(default=0)
+    red_score: int = Field(default=0)
+    ratings_ready: bool = Field(default=False)
 
 
 class TournamentSummaryProjection(QuerySQLModel, table=True):
@@ -34,6 +35,43 @@ class TournamentSummaryProjection(QuerySQLModel, table=True):
     slug: str = Field(index=True)
     match_count: int = 0
     started_at: datetime | None = None
+    event_id: str | None = Field(default=None, index=True)
+
+
+class EventSummaryProjection(QuerySQLModel, table=True):
+    __tablename__ = "event_summary_view"
+
+    event_id: str = Field(primary_key=True)
+    name: str
+    slug: str = Field(index=True)
+    tournaments: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    started_at: datetime | None = None
+    start_date: datetime | None = None
+    end_date: datetime | None = None
+
+
+class EventPlayerStatsProjection(QuerySQLModel, table=True):
+    __tablename__ = "event_player_stats_view"
+
+    event_id: str = Field(primary_key=True)
+    steam_id: str = Field(primary_key=True, index=True)
+    classes_played: list[str] = Field(default_factory=list, sa_column=Column(JSON))
+    primary_class: str = Field(default="unknown", index=True)
+    playtime_seconds: int = 0
+    kills: int = 0
+    deaths: int = 0
+    assists: int = 0
+    damage_per_minute: float = 0.0
+    healing_done: int = 0
+    damage_received: int = Field(default=0)
+    heals_received: int = Field(default=0)
+    ubers: int = Field(default=0)
+    drops: int = Field(default=0)
+    captures: int = Field(default=0)
+    headshots: int = Field(default=0)
+    backstabs: int = Field(default=0)
+    airshots: int = Field(default=0)
+    rating: float = 1.0
 
 
 class PlayerMatchStatsProjection(QuerySQLModel, table=True):
@@ -53,6 +91,14 @@ class PlayerMatchStatsProjection(QuerySQLModel, table=True):
     assists: int = 0
     damage_per_minute: float = 0.0
     healing_done: int = 0
+    damage_received: int = Field(default=0)
+    heals_received: int = Field(default=0)
+    ubers: int = Field(default=0)
+    drops: int = Field(default=0)
+    captures: int = Field(default=0)
+    headshots: int = Field(default=0)
+    backstabs: int = Field(default=0)
+    airshots: int = Field(default=0)
     rating: float = 1.0
 
 
@@ -65,7 +111,9 @@ class PlayerMatchClassStatsProjection(QuerySQLModel, table=True):
 
     __tablename__ = "player_match_class_stats_view"
     __table_args__ = (
-        UniqueConstraint("steam_id", "match_id", "class_id", name="uq_player_match_class"),
+        UniqueConstraint(
+            "steam_id", "match_id", "class_id", name="uq_player_match_class"
+        ),
     )
 
     id: int | None = Field(default=None, primary_key=True)
@@ -84,12 +132,6 @@ class PlayerMatchClassStatsProjection(QuerySQLModel, table=True):
     damage_dealt: int = 0
     damage_received: int = 0
     heals_received: int = 0
-    captures: int = 0
-    headshots: int = 0
-    backstabs: int = 0
-    airshots: int = 0
-    ubers: int = 0
-    drops: int = 0
     healing_done: int = 0
     rating: float = 1.0
 
@@ -186,3 +228,13 @@ class LeaderboardSnapshotProjection(QuerySQLModel, table=True):
     average_rating: float = 1.0
     primary_class: str = "unknown"
     updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ProcessedEvent(QuerySQLModel, table=True):
+    """Tracks integration event_ids already applied to the read model."""
+
+    __tablename__ = "processed_events"
+
+    event_id: UUID = Field(primary_key=True)
+    event_type: str = Field(index=True)
+    processed_at: datetime = Field(default_factory=utcnow)

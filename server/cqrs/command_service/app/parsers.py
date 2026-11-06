@@ -6,9 +6,9 @@ import re
 from collections import defaultdict
 from uuid import uuid4
 
-from ...shared.rating import class_id_from_name, normalize_class_name
 from ...shared.schemas import ClassStatSnapshot, MatchCommandModel, PlayerStatSnapshot
 from ...shared.steam import canonical_steam_id
+from ...shared.tf2_classes import class_id_from_name, normalize_class_name
 
 MAP_RE = re.compile(r"(?:map_name|Started map)\s*[= ]\s*(?P<map>\S+)", re.IGNORECASE)
 SCORE_RE = re.compile(r"(?P<team>blu|blue|red)_score=(?P<score>\d+)", re.IGNORECASE)
@@ -28,6 +28,9 @@ KV_PLAYER_RE = re.compile(
     r"(?:\s+heals_received=(?P<heals_received>\d+))?"
     r"(?:\s+captures=(?P<captures>\d+))?"
     r"(?:\s+primary_accuracy=(?P<primary_accuracy>[\d.]+))?"
+    r"(?:\s+headshots=(?P<headshots>\d+))?"
+    r"(?:\s+backstabs=(?P<backstabs>\d+))?"
+    r"(?:\s+airshots=(?P<airshots>\d+))?"
     r"(?:\s+ubers=(?P<ubers>\d+))?"
     r"(?:\s+drops=(?P<drops>\d+))?",
     re.IGNORECASE,
@@ -60,14 +63,22 @@ def _normalize_steam(raw: str) -> str:
     return canonical_steam_id(raw.strip())
 
 
-def _synthesize_class_stats(player: PlayerStatSnapshot, match_duration: int) -> list[ClassStatSnapshot]:
+def _synthesize_class_stats(
+    player: PlayerStatSnapshot, match_duration: int
+) -> list[ClassStatSnapshot]:
     """Build MatchStat-equivalent class rows when nested class_stats are absent."""
     if player.class_stats:
         return list(player.class_stats)
 
-    class_name = normalize_class_name(player.primary_class or primary_from_list(player.classes_played))
+    class_name = normalize_class_name(
+        player.primary_class or primary_from_list(player.classes_played)
+    )
     playtime = int(player.playtime_seconds or match_duration or 0)
-    damage_dealt = int(round(float(player.damage_per_minute or 0.0) * (playtime / 60.0))) if playtime else 0
+    damage_dealt = (
+        round(float(player.damage_per_minute or 0.0) * (playtime / 60.0))
+        if playtime
+        else 0
+    )
     is_medic = class_name == "medic"
     return [
         ClassStatSnapshot(
@@ -82,9 +93,6 @@ def _synthesize_class_stats(player: PlayerStatSnapshot, match_duration: int) -> 
             damage_dealt=damage_dealt,
             damage_received=int(player.damage_received or 0),
             heals_received=int(player.heals_received or 0),
-            captures=0,
-            ubers=int(player.ubers or 0) if is_medic else 0,
-            drops=int(player.drops or 0) if is_medic else 0,
             healing_done=int(player.healing_done or 0) if is_medic else 0,
         )
     ]
@@ -114,8 +122,11 @@ class SrcdsLogParser:
                     update={
                         "playtime_seconds": playtime,
                         "class_stats": class_stats,
-                        "primary_class": class_stats[0].class_name if class_stats else player.primary_class,
-                        "classes_played": [row.class_name for row in class_stats] or player.classes_played,
+                        "primary_class": class_stats[0].class_name
+                        if class_stats
+                        else player.primary_class,
+                        "classes_played": [row.class_name for row in class_stats]
+                        or player.classes_played,
                     }
                 )
             )
@@ -164,16 +175,40 @@ class SrcdsLogParser:
         # Keep one row per (steam_id, class) then roll up to player + nested class_stats.
         by_steam: dict[str, list[ClassStatSnapshot]] = defaultdict(list)
         teams: dict[str, str] = {}
+        captures_by_steam: dict[str, int] = defaultdict(int)
+        headshots_by_steam: dict[str, int] = defaultdict(int)
+        backstabs_by_steam: dict[str, int] = defaultdict(int)
+        airshots_by_steam: dict[str, int] = defaultdict(int)
+        ubers_by_steam: dict[str, int] = defaultdict(int)
+        drops_by_steam: dict[str, int] = defaultdict(int)
         for match in KV_PLAYER_RE.finditer(raw_log):
             steam_id = _normalize_steam(match.group("steam_id"))
             class_name = normalize_class_name(match.group("class"))
             teams[steam_id] = _normalize_team(match.group("team"))
+            captures_by_steam[steam_id] = max(
+                captures_by_steam[steam_id], int(match.group("captures") or 0)
+            )
+            headshots_by_steam[steam_id] = max(
+                headshots_by_steam[steam_id], int(match.group("headshots") or 0)
+            )
+            backstabs_by_steam[steam_id] = max(
+                backstabs_by_steam[steam_id], int(match.group("backstabs") or 0)
+            )
+            airshots_by_steam[steam_id] = max(
+                airshots_by_steam[steam_id], int(match.group("airshots") or 0)
+            )
+            ubers_by_steam[steam_id] = max(
+                ubers_by_steam[steam_id], int(match.group("ubers") or 0)
+            )
+            drops_by_steam[steam_id] = max(
+                drops_by_steam[steam_id], int(match.group("drops") or 0)
+            )
             dpm = float(match.group("dpm") or 0.0)
             healing = int(match.group("healing") or 0)
             damage_dealt = int(match.group("damage_dealt") or 0)
             if damage_dealt <= 0 and dpm > 0:
                 # Approximate until playtime is known at match level.
-                damage_dealt = int(round(dpm * 30.0))
+                damage_dealt = round(dpm * 30.0)
             is_medic = class_name == "medic"
             by_steam[steam_id].append(
                 ClassStatSnapshot(
@@ -188,9 +223,6 @@ class SrcdsLogParser:
                     damage_dealt=damage_dealt,
                     damage_received=int(match.group("damage_received") or 0),
                     heals_received=int(match.group("heals_received") or 0),
-                    captures=int(match.group("captures") or 0),
-                    ubers=int(match.group("ubers") or 0) if is_medic else 0,
-                    drops=int(match.group("drops") or 0) if is_medic else 0,
                     healing_done=healing if is_medic else 0,
                 )
             )
@@ -214,10 +246,18 @@ class SrcdsLogParser:
                     assists=assists,
                     damage_per_minute=dpm,
                     healing_done=healing,
-                    damage_received=max((row.damage_received for row in class_rows), default=0),
-                    heals_received=max((row.heals_received for row in class_rows), default=0),
-                    ubers=sum(row.ubers for row in class_rows),
-                    drops=sum(row.drops for row in class_rows),
+                    damage_received=max(
+                        (row.damage_received for row in class_rows), default=0
+                    ),
+                    heals_received=max(
+                        (row.heals_received for row in class_rows), default=0
+                    ),
+                    ubers=ubers_by_steam[steam_id],
+                    drops=drops_by_steam[steam_id],
+                    captures=captures_by_steam[steam_id],
+                    headshots=headshots_by_steam[steam_id],
+                    backstabs=backstabs_by_steam[steam_id],
+                    airshots=airshots_by_steam[steam_id],
                     class_stats=class_rows,
                 )
             )

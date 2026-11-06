@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from sqlalchemy import MetaData, inspect, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -47,7 +47,9 @@ def _ensure_write_schema(connection) -> None:
     if inspector.has_table("raw_log_events"):
         columns = {column["name"] for column in inspector.get_columns("raw_log_events")}
         if "source_log_id" not in columns:
-            connection.execute(text("ALTER TABLE raw_log_events ADD COLUMN source_log_id INTEGER"))
+            connection.execute(
+                text("ALTER TABLE raw_log_events ADD COLUMN source_log_id INTEGER")
+            )
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS ix_raw_log_events_source_log_id "
@@ -55,7 +57,9 @@ def _ensure_write_schema(connection) -> None:
                 )
             )
         if "content_hash" not in columns:
-            connection.execute(text("ALTER TABLE raw_log_events ADD COLUMN content_hash TEXT"))
+            connection.execute(
+                text("ALTER TABLE raw_log_events ADD COLUMN content_hash TEXT")
+            )
             connection.execute(
                 text(
                     "CREATE UNIQUE INDEX IF NOT EXISTS ix_raw_log_events_content_hash "
@@ -63,15 +67,55 @@ def _ensure_write_schema(connection) -> None:
                 )
             )
         if "actor_id" not in columns:
-            connection.execute(text("ALTER TABLE raw_log_events ADD COLUMN actor_id TEXT"))
+            connection.execute(
+                text("ALTER TABLE raw_log_events ADD COLUMN actor_id TEXT")
+            )
             connection.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS ix_raw_log_events_actor_id "
                     "ON raw_log_events (actor_id)"
                 )
             )
+        if "tournament_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE raw_log_events ADD COLUMN tournament_id TEXT")
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_raw_log_events_tournament_id "
+                    "ON raw_log_events (tournament_id)"
+                )
+            )
+
+    if inspector.has_table("outbox_events"):
+        connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_outbox_events_status_created_at "
+                "ON outbox_events (status, created_at)"
+            )
+        )
+
+    if inspector.has_table("events"):
+        event_columns = {column["name"] for column in inspector.get_columns("events")}
+        if "event_slug" in event_columns and "slug" not in event_columns:
+            connection.execute(
+                text("ALTER TABLE events RENAME COLUMN event_slug TO slug")
+            )
+
+    if inspector.has_table("tournaments"):
+        tournament_columns = {
+            column["name"] for column in inspector.get_columns("tournaments")
+        }
+        if "event_id" not in tournament_columns:
+            connection.execute(text("ALTER TABLE tournaments ADD COLUMN event_id TEXT"))
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_tournaments_event_id "
+                    "ON tournaments (event_id)"
+                )
+            )
 
 
-async def get_write_session() -> AsyncGenerator[AsyncSession, None]:
+async def get_write_session() -> AsyncGenerator[AsyncSession]:
     async with SessionLocal() as session:
         yield session

@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -15,33 +15,42 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ...shared.broker import publish_event
+from ...shared.event_ids import stable_event_uuid_from_slug
 from ...shared.events import (
+    EventCreatedEvent,
+    EventUpdatedEvent,
     LogEventCreatedEvent,
     MatchParsedEvent,
+    MatchTournamentAssignedEvent,
     PlayerAliasUpdatedEvent,
     TournamentCreatedEvent,
+    TournamentLinkedToEventEvent,
     TournamentUpdatedEvent,
 )
 from ...shared.schemas import (
+    AssignMatchTournamentCommand,
     CachedLogIngest,
+    CreateEventCommand,
     CreateTournamentCommand,
     IngestLogsTfCommand,
+    LinkTournamentToEventCommand,
     RawLogUpload,
     TournamentCommandModel,
+    UpdateEventCommand,
     UpdatePlayerDisplayNameCommand,
     UpdateTournamentCommand,
 )
+from ...shared.seed_cache import get_cached_log_data
+from ...shared.steam import canonical_steam_id
+from ...shared.timeutils import ensure_utc_naive, utcnow
 from ...shared.tournaments import (
     build_tournament_command,
     build_tournament_command_from_slug,
     stable_tournament_uuid_from_slug,
 )
-from ...shared.seed_cache import get_cached_log_data
-from ...shared.steam import canonical_steam_id
-from ...shared.timeutils import ensure_utc_naive, utcnow
 from .logs_tf_parser import parse_logs_tf
-from .models import RawLogEvent, TournamentRecord
+from .models import EventRecord, RawLogEvent, TournamentRecord
+from .outbox import flush_outbox, stage_event
 from .parsers import parse_srcds_log
 
 logger = logging.getLogger(__name__)
@@ -70,13 +79,17 @@ def _normalize_slug(slug: str) -> str:
     return normalized
 
 
+def _iso_or_none(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
 def _timestamp_from_logs_tf(data: dict[str, Any]) -> datetime:
     info = data.get("info") or {}
     raw_date = info.get("date")
     if raw_date is None:
         return utcnow()
     try:
-        return datetime.fromtimestamp(int(raw_date), tz=timezone.utc).replace(tzinfo=None)
+        return datetime.fromtimestamp(int(raw_date), tz=UTC).replace(tzinfo=None)
     except (TypeError, ValueError, OSError, OverflowError):
         return utcnow()
 
@@ -84,6 +97,52 @@ def _timestamp_from_logs_tf(data: dict[str, Any]) -> datetime:
 class CommandService:
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
+
+    async def _require_event(self, event_id: str) -> EventRecord:
+        record = await self.session.get(EventRecord, event_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        return record
+
+    async def _resolve_optional_event_id(self, event_id: Any) -> str | None:
+        if event_id is None:
+            return None
+        resolved = str(event_id)
+        await self._require_event(resolved)
+        return resolved
+
+    async def _resolve_ingest_tournament(
+        self,
+        tournament_id: Any,
+        *,
+        start_date,
+    ) -> TournamentCommandModel:
+        if tournament_id is None:
+            return build_tournament_command_from_slug(
+                "default-tournament",
+                start_date=start_date,
+            )
+        record = await self.session.get(TournamentRecord, str(tournament_id))
+        if record is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+        return TournamentCommandModel(
+            tournament_id=record.tournament_id,  # type: ignore[arg-type]
+            name=record.name,
+            slug=record.slug,
+            start_date=record.start_date,
+            end_date=record.end_date,
+            event_id=record.event_id,  # type: ignore[arg-type]
+        )
+
+    def _tournament_mutation_payload(self, record: TournamentRecord) -> dict[str, object]:
+        return {
+            "tournament_id": record.tournament_id,
+            "name": record.name,
+            "slug": record.slug,
+            "start_date": _iso_or_none(record.start_date),
+            "end_date": _iso_or_none(record.end_date),
+            "event_id": record.event_id,
+        }
 
     async def upload_log(
         self,
@@ -96,10 +155,14 @@ class CommandService:
 
         content_hash = _content_hash(payload.log_data)
         existing = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing:
             return {
                 "match_id": existing.match_id,
@@ -110,14 +173,14 @@ class CommandService:
         parsed_match = parse_srcds_log(payload.log_data)
         # Stable match id for identical payloads so projections stay idempotent.
         parsed_match.match_id = uuid5(NAMESPACE_URL, f"upload:{content_hash}")
+        tournament = await self._resolve_ingest_tournament(
+            payload.tournament_id, start_date=payload.timestamp
+        )
         return await self._persist_and_publish(
             parsed_match=parsed_match,
             raw_log=payload.log_data,
             timestamp=payload.timestamp,
-            tournament=build_tournament_command_from_slug(
-                "default-tournament",
-                start_date=payload.timestamp,
-            ),
+            tournament=tournament,
             source_log_id=None,
             content_hash=content_hash,
             actor_id=actor_id,
@@ -130,10 +193,16 @@ class CommandService:
         actor_id: str,
     ) -> dict[str, object]:
         existing = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.source_log_id == payload.log_id)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(
+                        RawLogEvent.source_log_id == payload.log_id
+                    )
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing:
             return {
                 "log_id": payload.log_id,
@@ -152,10 +221,14 @@ class CommandService:
 
         content_hash = _json_content_hash(log_data)
         existing_hash = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing_hash:
             return {
                 "log_id": existing_hash.source_log_id,
@@ -185,10 +258,14 @@ class CommandService:
         logstf_id = payload.logstf_id
 
         existing = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.source_log_id == logstf_id)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.source_log_id == logstf_id)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing:
             return {
                 "log_id": logstf_id,
@@ -200,10 +277,14 @@ class CommandService:
 
         content_hash = _json_content_hash(log_data)
         existing_hash = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.content_hash == content_hash)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing_hash:
             return {
                 "log_id": existing_hash.source_log_id,
@@ -213,14 +294,14 @@ class CommandService:
 
         timestamp = _timestamp_from_logs_tf(log_data)
         parsed_match = parse_logs_tf(log_data, logstf_id)
+        tournament = await self._resolve_ingest_tournament(
+            payload.tournament_id, start_date=timestamp
+        )
         return await self._persist_and_publish(
             parsed_match=parsed_match,
             raw_log=f"logs.tf:{logstf_id}",
             timestamp=timestamp,
-            tournament=build_tournament_command_from_slug(
-                "default-tournament",
-                start_date=timestamp,
-            ),
+            tournament=tournament,
             source_log_id=logstf_id,
             content_hash=content_hash,
             actor_id=actor_id,
@@ -258,7 +339,9 @@ class CommandService:
             ) from exc
 
         if not isinstance(data, dict):
-            raise HTTPException(status_code=502, detail="logs.tf returned unexpected payload")
+            raise HTTPException(
+                status_code=502, detail="logs.tf returned unexpected payload"
+            )
         if data.get("success") is False:
             raise HTTPException(
                 status_code=404,
@@ -286,7 +369,9 @@ class CommandService:
                 "display_name": display_name,
             },
         )
-        await publish_event(event.event_type, event.model_dump(mode="json"))
+        await stage_event(self.session, event)
+        await self.session.commit()
+        await flush_outbox()
         return {
             "steam_id": steam_id,
             "display_name": display_name,
@@ -305,18 +390,30 @@ class CommandService:
             raise HTTPException(status_code=400, detail="name is required")
 
         existing = (
-            await self.session.execute(select(TournamentRecord).where(TournamentRecord.slug == slug))
-        ).scalars().first()
+            (
+                await self.session.execute(
+                    select(TournamentRecord).where(TournamentRecord.slug == slug)
+                )
+            )
+            .scalars()
+            .first()
+        )
         if existing:
-            raise HTTPException(status_code=409, detail=f"Tournament slug already exists: {slug}")
+            raise HTTPException(
+                status_code=409, detail=f"Tournament slug already exists: {slug}"
+            )
 
         tournament_id = str(stable_tournament_uuid_from_slug(slug))
         now = utcnow()
+        linked_event_id = await self._resolve_optional_event_id(command.event_id)
         record = TournamentRecord(
             tournament_id=tournament_id,
+            event_id=linked_event_id,
             name=name,
             slug=slug,
-            start_date=ensure_utc_naive(command.start_date) if command.start_date else None,
+            start_date=ensure_utc_naive(command.start_date)
+            if command.start_date
+            else None,
             end_date=ensure_utc_naive(command.end_date) if command.end_date else None,
             created_by=actor_id,
             updated_by=actor_id,
@@ -324,17 +421,22 @@ class CommandService:
             updated_at=now,
         )
         self.session.add(record)
-        await self.session.commit()
-
-        payload = {
-            "tournament_id": tournament_id,
-            "name": name,
-            "slug": slug,
-            "start_date": record.start_date.isoformat() if record.start_date else None,
-            "end_date": record.end_date.isoformat() if record.end_date else None,
-        }
+        payload = self._tournament_mutation_payload(record)
         event = TournamentCreatedEvent(actor_id=actor_id, payload=payload)
-        await publish_event(event.event_type, event.model_dump(mode="json"))
+        await stage_event(self.session, event)
+        if linked_event_id:
+            await stage_event(
+                self.session,
+                TournamentLinkedToEventEvent(
+                    actor_id=actor_id,
+                    payload={
+                        "tournament_id": tournament_id,
+                        "event_id": linked_event_id,
+                    },
+                ),
+            )
+        await self.session.commit()
+        await flush_outbox()
         return {**payload, "status": "accepted"}
 
     async def update_tournament(
@@ -346,6 +448,7 @@ class CommandService:
     ) -> dict[str, object]:
         record = await self.session.get(TournamentRecord, tournament_id)
         now = utcnow()
+        previous_event_id: str | None = None
         if record is None:
             # Promote a query-projected / catalog tournament into the write model.
             name = (command.name or "").strip()
@@ -356,34 +459,59 @@ class CommandService:
                     detail="Tournament not found on write side; provide name and slug to claim it",
                 )
             conflict = (
-                await self.session.execute(select(TournamentRecord).where(TournamentRecord.slug == slug))
-            ).scalars().first()
+                (
+                    await self.session.execute(
+                        select(TournamentRecord).where(TournamentRecord.slug == slug)
+                    )
+                )
+                .scalars()
+                .first()
+            )
             if conflict:
-                raise HTTPException(status_code=409, detail=f"Tournament slug already exists: {slug}")
+                raise HTTPException(
+                    status_code=409, detail=f"Tournament slug already exists: {slug}"
+                )
+            linked_event_id = (
+                await self._resolve_optional_event_id(command.event_id)
+                if command.event_id is not None
+                else None
+            )
             record = TournamentRecord(
                 tournament_id=tournament_id,
+                event_id=linked_event_id,
                 name=name,
                 slug=slug,
-                start_date=ensure_utc_naive(command.start_date) if command.start_date else None,
-                end_date=ensure_utc_naive(command.end_date) if command.end_date else None,
+                start_date=ensure_utc_naive(command.start_date)
+                if command.start_date
+                else None,
+                end_date=ensure_utc_naive(command.end_date)
+                if command.end_date
+                else None,
                 created_by=actor_id,
                 updated_by=actor_id,
                 created_at=now,
                 updated_at=now,
             )
             self.session.add(record)
-            await self.session.commit()
-            payload = {
-                "tournament_id": record.tournament_id,
-                "name": record.name,
-                "slug": record.slug,
-                "start_date": record.start_date.isoformat() if record.start_date else None,
-                "end_date": record.end_date.isoformat() if record.end_date else None,
-            }
+            payload = self._tournament_mutation_payload(record)
             event = TournamentUpdatedEvent(actor_id=actor_id, payload=payload)
-            await publish_event(event.event_type, event.model_dump(mode="json"))
+            await stage_event(self.session, event)
+            if linked_event_id:
+                await stage_event(
+                    self.session,
+                    TournamentLinkedToEventEvent(
+                        actor_id=actor_id,
+                        payload={
+                            "tournament_id": record.tournament_id,
+                            "event_id": linked_event_id,
+                        },
+                    ),
+                )
+            await self.session.commit()
+            await flush_outbox()
             return {**payload, "status": "accepted"}
 
+        previous_event_id = record.event_id
         if command.name is not None:
             name = command.name.strip()
             if not name:
@@ -392,15 +520,141 @@ class CommandService:
         if command.slug is not None:
             slug = _normalize_slug(command.slug)
             conflict = (
-                await self.session.execute(
-                    select(TournamentRecord).where(
-                        TournamentRecord.slug == slug,
-                        TournamentRecord.tournament_id != tournament_id,
+                (
+                    await self.session.execute(
+                        select(TournamentRecord).where(
+                            TournamentRecord.slug == slug,
+                            TournamentRecord.tournament_id != tournament_id,
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if conflict:
-                raise HTTPException(status_code=409, detail=f"Tournament slug already exists: {slug}")
+                raise HTTPException(
+                    status_code=409, detail=f"Tournament slug already exists: {slug}"
+                )
+            record.slug = slug
+        if command.start_date is not None:
+            record.start_date = ensure_utc_naive(command.start_date)
+        if command.end_date is not None:
+            record.end_date = ensure_utc_naive(command.end_date)
+        event_link_changed = False
+        if "event_id" in command.model_fields_set:
+            record.event_id = await self._resolve_optional_event_id(command.event_id)
+            event_link_changed = record.event_id != previous_event_id
+
+        record.updated_by = actor_id
+        record.updated_at = now
+
+        payload = self._tournament_mutation_payload(record)
+        event = TournamentUpdatedEvent(actor_id=actor_id, payload=payload)
+        await stage_event(self.session, event)
+        if event_link_changed:
+            await stage_event(
+                self.session,
+                TournamentLinkedToEventEvent(
+                    actor_id=actor_id,
+                    payload={
+                        "tournament_id": record.tournament_id,
+                        "event_id": record.event_id,
+                    },
+                ),
+            )
+        await self.session.commit()
+        await flush_outbox()
+        return {**payload, "status": "accepted"}
+
+    async def create_event(
+        self,
+        command: CreateEventCommand,
+        *,
+        actor_id: str,
+    ) -> dict[str, object]:
+        slug = _normalize_slug(command.slug)
+        name = command.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
+
+        existing = (
+            (
+                await self.session.execute(
+                    select(EventRecord).where(EventRecord.slug == slug)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if existing:
+            raise HTTPException(
+                status_code=409, detail=f"Event slug already exists: {slug}"
+            )
+
+        event_id = str(stable_event_uuid_from_slug(slug))
+        now = utcnow()
+        record = EventRecord(
+            event_id=event_id,
+            name=name,
+            slug=slug,
+            start_date=ensure_utc_naive(command.start_date)
+            if command.start_date
+            else None,
+            end_date=ensure_utc_naive(command.end_date) if command.end_date else None,
+            created_by=actor_id,
+            updated_by=actor_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(record)
+        payload = {
+            "event_id": event_id,
+            "name": name,
+            "slug": slug,
+            "start_date": record.start_date.isoformat() if record.start_date else None,
+            "end_date": record.end_date.isoformat() if record.end_date else None,
+        }
+        event = EventCreatedEvent(actor_id=actor_id, payload=payload)
+        await stage_event(self.session, event)
+        await self.session.commit()
+        await flush_outbox()
+        return {**payload, "status": "accepted"}
+
+    async def update_event(
+        self,
+        event_id: str,
+        command: UpdateEventCommand,
+        *,
+        actor_id: str,
+    ) -> dict[str, object]:
+        record = await self.session.get(EventRecord, event_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        now = utcnow()
+        if command.name is not None:
+            name = command.name.strip()
+            if not name:
+                raise HTTPException(status_code=400, detail="name cannot be empty")
+            record.name = name
+        if command.slug is not None:
+            slug = _normalize_slug(command.slug)
+            conflict = (
+                (
+                    await self.session.execute(
+                        select(EventRecord).where(
+                            EventRecord.slug == slug,
+                            EventRecord.event_id != event_id,
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if conflict:
+                raise HTTPException(
+                    status_code=409, detail=f"Event slug already exists: {slug}"
+                )
             record.slug = slug
         if command.start_date is not None:
             record.start_date = ensure_utc_naive(command.start_date)
@@ -409,17 +663,82 @@ class CommandService:
 
         record.updated_by = actor_id
         record.updated_at = now
-        await self.session.commit()
 
         payload = {
-            "tournament_id": record.tournament_id,
+            "event_id": record.event_id,
             "name": record.name,
             "slug": record.slug,
             "start_date": record.start_date.isoformat() if record.start_date else None,
             "end_date": record.end_date.isoformat() if record.end_date else None,
         }
-        event = TournamentUpdatedEvent(actor_id=actor_id, payload=payload)
-        await publish_event(event.event_type, event.model_dump(mode="json"))
+        event = EventUpdatedEvent(actor_id=actor_id, payload=payload)
+        await stage_event(self.session, event)
+        await self.session.commit()
+        await flush_outbox()
+        return {**payload, "status": "accepted"}
+
+    async def link_tournament_to_event(
+        self,
+        tournament_id: str,
+        command: LinkTournamentToEventCommand,
+        *,
+        actor_id: str,
+    ) -> dict[str, object]:
+        tournament = await self.session.get(TournamentRecord, tournament_id)
+        if tournament is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+
+        event_id = await self._resolve_optional_event_id(command.event_id)
+
+        now = utcnow()
+        tournament.event_id = event_id
+        tournament.updated_by = actor_id
+        tournament.updated_at = now
+
+        payload = {
+            "tournament_id": tournament.tournament_id,
+            "event_id": event_id,
+        }
+        event = TournamentLinkedToEventEvent(actor_id=actor_id, payload=payload)
+        await stage_event(self.session, event)
+        await self.session.commit()
+        await flush_outbox()
+        return {**payload, "status": "accepted"}
+
+    async def assign_match_tournament(
+        self,
+        match_id: str,
+        command: AssignMatchTournamentCommand,
+        *,
+        actor_id: str,
+    ) -> dict[str, object]:
+        tournament_id = str(command.tournament_id)
+        tournament = await self.session.get(TournamentRecord, tournament_id)
+        if tournament is None:
+            raise HTTPException(status_code=404, detail="Tournament not found")
+
+        raw = (
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.match_id == str(match_id))
+                )
+            )
+            .scalars()
+            .first()
+        )
+        previous_tournament_id = raw.tournament_id if raw is not None else None
+        if raw is not None:
+            raw.tournament_id = tournament_id
+
+        payload = {
+            "match_id": str(match_id),
+            "tournament_id": tournament_id,
+            "previous_tournament_id": previous_tournament_id,
+        }
+        event = MatchTournamentAssignedEvent(actor_id=actor_id, payload=payload)
+        await stage_event(self.session, event)
+        await self.session.commit()
+        await flush_outbox()
         return {**payload, "status": "accepted"}
 
     async def _persist_and_publish(
@@ -436,10 +755,14 @@ class CommandService:
         match_id = str(parsed_match.match_id)
 
         existing_match = (
-            await self.session.execute(
-                select(RawLogEvent).where(RawLogEvent.match_id == match_id)
+            (
+                await self.session.execute(
+                    select(RawLogEvent).where(RawLogEvent.match_id == match_id)
+                )
             )
-        ).scalars().first()
+            .scalars()
+            .first()
+        )
         if existing_match:
             return {
                 "match_id": existing_match.match_id,
@@ -458,9 +781,9 @@ class CommandService:
                 red_score=parsed_match.red_score,
                 timestamp=ensure_utc_naive(timestamp),
                 actor_id=actor_id,
+                tournament_id=str(tournament.tournament_id),
             )
         )
-        await self.session.commit()
 
         match_payload = {
             **parsed_match.model_dump(mode="json"),
@@ -482,8 +805,10 @@ class CommandService:
             },
         )
 
-        await publish_event(match_event.event_type, match_event.model_dump(mode="json"))
-        await publish_event(created_event.event_type, created_event.model_dump(mode="json"))
+        await stage_event(self.session, match_event)
+        await stage_event(self.session, created_event)
+        await self.session.commit()
+        await flush_outbox()
 
         return {
             "match_id": match_id,

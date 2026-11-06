@@ -51,15 +51,21 @@ def canonical_steam_id(steam_id: str) -> str:
 class SteamWebApiClient:
     """Thin client for Steam GetPlayerSummaries (batched, 100 IDs per call)."""
 
-    def __init__(self, api_key: str | None = None, http_client: httpx.AsyncClient | None = None) -> None:
-        self.api_key = api_key if api_key is not None else os.getenv("STEAM_API_KEY", "").strip()
+    def __init__(
+        self, api_key: str | None = None, http_client: httpx.AsyncClient | None = None
+    ) -> None:
+        self.api_key = (
+            api_key if api_key is not None else os.getenv("STEAM_API_KEY", "").strip()
+        )
         self._client = http_client
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    async def get_player_summaries(self, steam_ids: list[str]) -> dict[str, dict[str, Any]]:
+    async def get_player_summaries(
+        self, steam_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
         """Return mapping steam_id64 -> summary dict for resolved players."""
         if not self.enabled or not steam_ids:
             return {}

@@ -11,19 +11,12 @@ from sqlalchemy import or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, func, select
 
-from ...shared.broker import publish_event
-from ...shared.events import RatingsRebuildRequestedEvent, RatingsRebuiltEvent
-from ...shared.rating import (
-    RatingService,
-    class_id_from_name,
-    class_name_from_id,
-    normalize_class_name,
-    primary_class,
-    rating_row_from_mapping,
-)
 from ...shared.schemas import (
     ClassRatingBenchmarkView,
     ClassStatSnapshot,
+    ClassStatView,
+    EventDetailView,
+    EventSummaryView,
     LeaderboardEntryView,
     MatchSummaryView,
     PlayerClassAggregateView,
@@ -34,10 +27,21 @@ from ...shared.schemas import (
     TournamentSummaryView,
 )
 from ...shared.steam import SteamWebApiClient, canonical_steam_id, to_steam_id64
+from ...shared.tf2_classes import (
+    class_id_from_name,
+    class_name_from_id,
+    normalize_class_name,
+    primary_class,
+)
 from ...shared.timeutils import parse_utc_naive, utcnow
-from ...shared.tournaments import CATALOG_SLUGS, TOURNAMENT_CATALOG, VISIBLE_TOURNAMENT_SLUGS
+from ...shared.tournaments import (
+    TOURNAMENT_CATALOG,
+    VISIBLE_TOURNAMENT_SLUGS,
+)
 from .models import (
     ClassRatingBenchmarkProjection,
+    EventPlayerStatsProjection,
+    EventSummaryProjection,
     LeaderboardSnapshotProjection,
     MatchSummaryProjection,
     PlayerClassStatsProjection,
@@ -46,6 +50,10 @@ from .models import (
     PlayerMatchClassStatsProjection,
     PlayerMatchStatsProjection,
     TournamentSummaryProjection,
+)
+from .rating import (
+    RatingService,
+    rating_row_from_mapping,
 )
 
 
@@ -74,7 +82,11 @@ def _class_snapshots_from_player(
             class_name = normalize_class_name(
                 str(item.get("class_name") or item.get("type") or "unknown")
             )
-            class_id = int(item.get("class_id") if item.get("class_id") is not None else class_id_from_name(class_name))
+            class_id = int(
+                item.get("class_id")
+                if item.get("class_id") is not None
+                else class_id_from_name(class_name)
+            )
             snapshots.append(
                 ClassStatSnapshot(
                     class_name=class_name,
@@ -88,12 +100,6 @@ def _class_snapshots_from_player(
                     damage_dealt=int(item.get("damage_dealt") or 0),
                     damage_received=int(item.get("damage_received") or 0),
                     heals_received=int(item.get("heals_received") or 0),
-                    captures=int(item.get("captures") or 0),
-                    headshots=int(item.get("headshots") or 0),
-                    backstabs=int(item.get("backstabs") or 0),
-                    airshots=int(item.get("airshots") or 0),
-                    ubers=int(item.get("ubers") or 0),
-                    drops=int(item.get("drops") or 0),
                     healing_done=int(item.get("healing_done") or 0),
                 )
             )
@@ -107,7 +113,7 @@ def _class_snapshots_from_player(
     damage_dealt = 0
     dpm = float(player.get("damage_per_minute") or 0.0)
     if playtime > 0 and dpm > 0:
-        damage_dealt = int(round(dpm * (playtime / 60.0)))
+        damage_dealt = round(dpm * (playtime / 60.0))
     is_medic = class_name == "medic"
     return [
         ClassStatSnapshot(
@@ -122,9 +128,6 @@ def _class_snapshots_from_player(
             damage_dealt=damage_dealt,
             damage_received=int(player.get("damage_received") or 0),
             heals_received=int(player.get("heals_received") or 0),
-            captures=0,
-            ubers=int(player.get("ubers") or 0) if is_medic else 0,
-            drops=int(player.get("drops") or 0) if is_medic else 0,
             healing_done=int(player.get("healing_done") or 0) if is_medic else 0,
         )
     ]
@@ -136,7 +139,9 @@ def _playtime_weighted_rating(rows: list[PlayerMatchClassStatsProjection]) -> fl
     total_playtime = sum(max(int(row.playtime_seconds or 0), 0) for row in rows)
     if total_playtime <= 0:
         return round(sum(float(row.rating) for row in rows) / len(rows), 3)
-    weighted = sum(float(row.rating) * max(int(row.playtime_seconds or 0), 0) for row in rows)
+    weighted = sum(
+        float(row.rating) * max(int(row.playtime_seconds or 0), 0) for row in rows
+    )
     return round(weighted / total_playtime, 3)
 
 
@@ -168,60 +173,56 @@ class ProjectionService:
         return (candidates[0] if candidates else str(raw or "").strip()), None
 
     async def handle_event(self, event_type: str, envelope: dict[str, Any]) -> None:
+        """Project an event into the read model (caller owns the transaction)."""
         payload = envelope.get("payload", envelope)
         if event_type == "MatchParsed":
             await self._project_match_parsed(payload)
-            await self.session.commit()
             match_id = str(payload.get("match_id") or "")
             tournament = payload.get("tournament") or {}
             tournament_id = (
-                str(tournament["tournament_id"]) if tournament.get("tournament_id") else None
+                str(tournament["tournament_id"])
+                if tournament.get("tournament_id")
+                else None
             )
-            rebuild_event = RatingsRebuildRequestedEvent(
-                payload={
-                    "match_id": match_id,
-                    "tournament_id": tournament_id,
-                }
-            )
-            await publish_event(
-                rebuild_event.event_type,
-                rebuild_event.model_dump(mode="json"),
-            )
-        elif event_type == "RatingsRebuildRequested":
-            match_id = str(payload.get("match_id") or "")
-            tournament_id = payload.get("tournament_id")
+            # Rating math executes solely in this query-side handler.
             await self.rebuild_ratings()
             await self._mark_ratings_ready(match_id=match_id or None)
-            await self.session.commit()
-            rebuilt_event = RatingsRebuiltEvent(
-                payload={
-                    "match_id": match_id or None,
-                    "tournament_id": str(tournament_id) if tournament_id else None,
-                    "rebuilt_at": utcnow().isoformat(),
-                }
-            )
-            await publish_event(
-                rebuilt_event.event_type,
-                rebuilt_event.model_dump(mode="json"),
-            )
-        elif event_type == "RatingsRebuilt":
-            tournament_id = payload.get("tournament_id")
             if tournament_id:
                 await self.refresh_tournament_leaderboard(str(tournament_id))
             else:
                 await self.refresh_all_tournament_leaderboards()
             await self.resolve_missing_player_identities()
-            await self.session.commit()
-            return
+            await self._refresh_event_for_tournament(tournament_id)
+        elif event_type in {"RatingsRebuildRequested", "RatingsRebuilt"}:
+            # Legacy internal events — keep for in-flight messages, no-op side effects
+            # when MatchParsed already completed the same work.
+            match_id = str(payload.get("match_id") or "")
+            tournament_id = payload.get("tournament_id")
+            if event_type == "RatingsRebuildRequested":
+                await self.rebuild_ratings()
+                await self._mark_ratings_ready(match_id=match_id or None)
+            if tournament_id:
+                await self.refresh_tournament_leaderboard(str(tournament_id))
+            else:
+                await self.refresh_all_tournament_leaderboards()
+            if event_type == "RatingsRebuilt":
+                await self.resolve_missing_player_identities()
         elif event_type == "LogEventCreated":
             # Audit hook — match/player materialization is driven by MatchParsed.
             return
         elif event_type == "PlayerAliasUpdated":
             await self._project_player_alias_updated(payload)
-            await self.session.commit()
         elif event_type in {"TournamentCreated", "TournamentUpdated"}:
             await self._upsert_tournament(payload, force_visible=True)
-            await self.session.commit()
+        elif event_type in {"EventCreated", "EventUpdated"}:
+            await self._upsert_event(payload)
+        elif event_type == "TournamentLinkedToEvent":
+            await self._apply_tournament_event_link(
+                str(payload.get("tournament_id") or ""),
+                str(payload["event_id"]) if payload.get("event_id") else None,
+            )
+        elif event_type == "MatchTournamentAssigned":
+            await self._project_match_tournament_assigned(payload)
 
     async def _mark_ratings_ready(self, match_id: str | None = None) -> None:
         """Flag match summaries as rating-complete after a full rebuild."""
@@ -230,7 +231,9 @@ class ProjectionService:
             if row is not None:
                 row.ratings_ready = True
             # Full rebuild rescores every row — mark all matches ready.
-        rows = (await self.session.execute(select(MatchSummaryProjection))).scalars().all()
+        rows = (
+            (await self.session.execute(select(MatchSummaryProjection))).scalars().all()
+        )
         for row in rows:
             row.ratings_ready = True
         await self.session.flush()
@@ -277,16 +280,26 @@ class ProjectionService:
             return
 
         identities = (
-            await self.session.execute(select(PlayerIdentityProjection))
-        ).scalars().all()
+            (await self.session.execute(select(PlayerIdentityProjection)))
+            .scalars()
+            .all()
+        )
         by_steam = {row.steam_id: row for row in identities}
 
         lifetime_ids = (
-            await self.session.execute(select(PlayerLifetimeStatsProjection.steam_id))
-        ).scalars().all()
+            (await self.session.execute(select(PlayerLifetimeStatsProjection.steam_id)))
+            .scalars()
+            .all()
+        )
         match_ids = (
-            await self.session.execute(select(PlayerMatchStatsProjection.steam_id).distinct())
-        ).scalars().all()
+            (
+                await self.session.execute(
+                    select(PlayerMatchStatsProjection.steam_id).distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
         all_steam_ids = {str(sid) for sid in list(lifetime_ids) + list(match_ids)}
 
         now = utcnow()
@@ -314,9 +327,7 @@ class ProjectionService:
             return
 
         summaries = await client.get_player_summaries(to_resolve)
-        steam64_to_original = {
-            (to_steam_id64(sid) or sid): sid for sid in to_resolve
-        }
+        steam64_to_original = {(to_steam_id64(sid) or sid): sid for sid in to_resolve}
         for steam64, summary in summaries.items():
             original = steam64_to_original.get(steam64)
             if not original:
@@ -328,10 +339,14 @@ class ProjectionService:
             identity.persona_name = (
                 str(summary.get("personaname") or "").strip() or identity.persona_name
             )
-            identity.avatar_url = str(summary.get("avatar") or "") or identity.avatar_url
+            identity.avatar_url = (
+                str(summary.get("avatar") or "") or identity.avatar_url
+            )
             identity.resolved_at = now
             # custom_alias (admin override) counts as a resolved display name.
-            identity.resolve_failed = not bool(identity.custom_alias or identity.persona_name)
+            identity.resolve_failed = not bool(
+                identity.custom_alias or identity.persona_name
+            )
 
         resolved_64 = set(summaries.keys())
         for steam_id in to_resolve:
@@ -351,12 +366,16 @@ class ProjectionService:
         if not steam_ids:
             return {}
         rows = (
-            await self.session.execute(
-                select(PlayerIdentityProjection).where(
-                    col(PlayerIdentityProjection.steam_id).in_(list(set(steam_ids)))
+            (
+                await self.session.execute(
+                    select(PlayerIdentityProjection).where(
+                        col(PlayerIdentityProjection.steam_id).in_(list(set(steam_ids)))
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return {row.steam_id: (row.custom_alias or row.persona_name) for row in rows}
 
     async def _project_player_alias_updated(self, payload: dict[str, Any]) -> None:
@@ -381,7 +400,9 @@ class ProjectionService:
         date_played = _parse_datetime(payload.get("date_played"))
         tournament = payload.get("tournament") or {}
         tournament_id = (
-            str(tournament["tournament_id"]) if tournament.get("tournament_id") else None
+            str(tournament["tournament_id"])
+            if tournament.get("tournament_id")
+            else None
         )
         source_log_id = payload.get("source_log_id")
         duration_seconds = int(payload.get("duration_seconds", 1800))
@@ -392,7 +413,9 @@ class ProjectionService:
                 MatchSummaryProjection(
                     match_id=match_id,
                     tournament_id=tournament_id,
-                    source_log_id=int(source_log_id) if source_log_id is not None else None,
+                    source_log_id=int(source_log_id)
+                    if source_log_id is not None
+                    else None,
                     map_name=payload.get("map_name", "unknown_map"),
                     duration_seconds=duration_seconds,
                     winning_team=winning_team,
@@ -437,7 +460,9 @@ class ProjectionService:
         slug = str(tournament.get("slug") or "")
         if not force_visible and slug and slug not in VISIBLE_TOURNAMENT_SLUGS:
             # Allow updates for tournaments already materialized (admin-created).
-            existing_any = await self.session.get(TournamentSummaryProjection, tournament_id)
+            existing_any = await self.session.get(
+                TournamentSummaryProjection, tournament_id
+            )
             if existing_any is None:
                 return
 
@@ -451,9 +476,14 @@ class ProjectionService:
         ).scalar_one()
 
         started_at = (
-            _parse_datetime(tournament["start_date"]) if tournament.get("start_date") else None
+            _parse_datetime(tournament["start_date"])
+            if tournament.get("start_date")
+            else None
         )
         if existing is None:
+            event_id = (
+                str(tournament["event_id"]) if tournament.get("event_id") else None
+            )
             self.session.add(
                 TournamentSummaryProjection(
                     tournament_id=tournament_id,
@@ -461,6 +491,7 @@ class ProjectionService:
                     slug=slug or "default-tournament",
                     match_count=match_count,
                     started_at=started_at,
+                    event_id=event_id,
                 )
             )
             return
@@ -470,6 +501,240 @@ class ProjectionService:
         existing.match_count = match_count
         if started_at and existing.started_at is None:
             existing.started_at = started_at
+        if tournament.get("event_id"):
+            existing.event_id = str(tournament["event_id"])
+        elif "event_id" in tournament and tournament["event_id"] is None:
+            existing.event_id = None
+
+    async def _upsert_event(self, payload: dict[str, Any]) -> None:
+        event_id = str(payload.get("event_id") or "")
+        if not event_id:
+            return
+        start_date = (
+            _parse_datetime(payload["start_date"]) if payload.get("start_date") else None
+        )
+        end_date = (
+            _parse_datetime(payload["end_date"]) if payload.get("end_date") else None
+        )
+        existing = await self.session.get(EventSummaryProjection, event_id)
+        if existing is None:
+            self.session.add(
+                EventSummaryProjection(
+                    event_id=event_id,
+                    name=str(payload.get("name") or "Untitled event"),
+                    slug=str(payload.get("slug") or event_id),
+                    tournaments=[],
+                    started_at=start_date,
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            )
+            await self.session.flush()
+            return
+        if payload.get("name"):
+            existing.name = str(payload["name"])
+        if payload.get("slug"):
+            existing.slug = str(payload["slug"])
+        if "start_date" in payload:
+            existing.start_date = start_date
+            existing.started_at = start_date
+        if "end_date" in payload:
+            existing.end_date = end_date
+        await self.session.flush()
+
+    async def _apply_tournament_event_link(
+        self,
+        tournament_id: str,
+        event_id: str | None,
+    ) -> None:
+        if not tournament_id:
+            return
+        tournament = await self.session.get(TournamentSummaryProjection, tournament_id)
+        old_event_id = tournament.event_id if tournament is not None else None
+        if tournament is not None:
+            tournament.event_id = event_id
+
+        affected = {eid for eid in (old_event_id, event_id) if eid}
+        if old_event_id and old_event_id != event_id:
+            await self._remove_tournament_from_event(old_event_id, tournament_id)
+        if event_id:
+            await self._add_tournament_to_event(event_id, tournament_id)
+        for affected_id in affected:
+            await self._rebuild_event_player_stats(affected_id)
+        await self.session.flush()
+
+    async def _add_tournament_to_event(self, event_id: str, tournament_id: str) -> None:
+        event = await self.session.get(EventSummaryProjection, event_id)
+        if event is None:
+            return
+        current = [str(tid) for tid in (event.tournaments or [])]
+        if tournament_id not in current:
+            event.tournaments = [*current, tournament_id]
+
+    async def _remove_tournament_from_event(
+        self, event_id: str, tournament_id: str
+    ) -> None:
+        event = await self.session.get(EventSummaryProjection, event_id)
+        if event is None:
+            return
+        event.tournaments = [
+            str(tid) for tid in (event.tournaments or []) if str(tid) != tournament_id
+        ]
+
+    async def _refresh_event_for_tournament(self, tournament_id: str | None) -> None:
+        if not tournament_id:
+            return
+        tournament = await self.session.get(TournamentSummaryProjection, tournament_id)
+        event_id = tournament.event_id if tournament is not None else None
+        if event_id:
+            await self._rebuild_event_player_stats(event_id)
+
+    async def _recount_tournament(self, tournament_id: str) -> None:
+        if not tournament_id:
+            return
+        row = await self.session.get(TournamentSummaryProjection, tournament_id)
+        if row is None:
+            return
+        match_count = (
+            await self.session.execute(
+                select(func.count())
+                .select_from(MatchSummaryProjection)
+                .where(MatchSummaryProjection.tournament_id == tournament_id)
+            )
+        ).scalar_one()
+        row.match_count = int(match_count or 0)
+
+    async def _rebuild_event_player_stats(self, event_id: str) -> None:
+        event = await self.session.get(EventSummaryProjection, event_id)
+        if event is None:
+            return
+        tournament_ids = [str(tid) for tid in (event.tournaments or []) if tid]
+        existing_rows = (
+            (
+                await self.session.execute(
+                    select(EventPlayerStatsProjection).where(
+                        EventPlayerStatsProjection.event_id == event_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in existing_rows:
+            await self.session.delete(row)
+        await self.session.flush()
+
+        if not tournament_ids:
+            return
+
+        player_rows = (
+            (
+                await self.session.execute(
+                    select(PlayerMatchStatsProjection)
+                    .join(
+                        MatchSummaryProjection,
+                        MatchSummaryProjection.match_id
+                        == PlayerMatchStatsProjection.match_id,
+                    )
+                    .where(
+                        col(MatchSummaryProjection.tournament_id).in_(tournament_ids)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        by_player: dict[str, list[PlayerMatchStatsProjection]] = defaultdict(list)
+        for row in player_rows:
+            by_player[row.steam_id].append(row)
+
+        for steam_id, rows in by_player.items():
+            matches_played = len(rows)
+            class_counts: dict[str, int] = defaultdict(int)
+            classes: list[str] = []
+            for row in rows:
+                for class_name in row.classes_played or []:
+                    if class_name not in classes:
+                        classes.append(class_name)
+                class_counts[row.primary_class] += 1
+            primary = (
+                max(class_counts.items(), key=lambda item: item[1])[0]
+                if class_counts
+                else "unknown"
+            )
+            playtime = sum(int(row.playtime_seconds or 0) for row in rows)
+            self.session.add(
+                EventPlayerStatsProjection(
+                    event_id=event_id,
+                    steam_id=steam_id,
+                    classes_played=classes,
+                    primary_class=primary,
+                    playtime_seconds=playtime,
+                    kills=sum(int(row.kills or 0) for row in rows),
+                    deaths=sum(int(row.deaths or 0) for row in rows),
+                    assists=sum(int(row.assists or 0) for row in rows),
+                    damage_per_minute=round(
+                        sum(float(row.damage_per_minute or 0) for row in rows)
+                        / matches_played,
+                        2,
+                    )
+                    if matches_played
+                    else 0.0,
+                    healing_done=sum(int(row.healing_done or 0) for row in rows),
+                    damage_received=sum(
+                        int(row.damage_received or 0) for row in rows
+                    ),
+                    heals_received=sum(int(row.heals_received or 0) for row in rows),
+                    ubers=sum(int(row.ubers or 0) for row in rows),
+                    drops=sum(int(row.drops or 0) for row in rows),
+                    captures=sum(int(row.captures or 0) for row in rows),
+                    headshots=sum(int(row.headshots or 0) for row in rows),
+                    backstabs=sum(int(row.backstabs or 0) for row in rows),
+                    airshots=sum(int(row.airshots or 0) for row in rows),
+                    rating=round(
+                        sum(float(row.rating or 1.0) for row in rows) / matches_played,
+                        3,
+                    )
+                    if matches_played
+                    else 1.0,
+                )
+            )
+        await self.session.flush()
+
+    async def _project_match_tournament_assigned(self, payload: dict[str, Any]) -> None:
+        match_id = str(payload.get("match_id") or "")
+        new_tournament_id = str(payload.get("tournament_id") or "")
+        if not match_id or not new_tournament_id:
+            return
+        match = await self.session.get(MatchSummaryProjection, match_id)
+        if match is None:
+            return
+        old_tournament_id = match.tournament_id
+        payload_previous = payload.get("previous_tournament_id")
+        if payload_previous and not old_tournament_id:
+            old_tournament_id = str(payload_previous)
+        match.tournament_id = new_tournament_id
+
+        class_rows = (
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection).where(
+                        PlayerMatchClassStatsProjection.match_id == match_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in class_rows:
+            row.tournament_id = new_tournament_id
+
+        await self.session.flush()
+        for tournament_id in {old_tournament_id, new_tournament_id}:
+            if tournament_id:
+                await self._recount_tournament(str(tournament_id))
+                await self.refresh_tournament_leaderboard(str(tournament_id))
+                await self._refresh_event_for_tournament(str(tournament_id))
 
     async def _upsert_player_stats(
         self,
@@ -485,7 +750,9 @@ class ProjectionService:
             player.get("classes_played") or []
         )
         if class_snapshots:
-            primary = max(class_snapshots, key=lambda snap: snap.playtime_seconds).class_name
+            primary = max(
+                class_snapshots, key=lambda snap: snap.playtime_seconds
+            ).class_name
         else:
             primary = normalize_class_name(
                 player.get("primary_class") or primary_class(classes_played)
@@ -493,13 +760,24 @@ class ProjectionService:
 
         playtime = int(player.get("playtime_seconds") or 0)
         if playtime <= 0:
-            playtime = sum(snap.playtime_seconds for snap in class_snapshots) or match_duration_seconds
+            playtime = (
+                sum(snap.playtime_seconds for snap in class_snapshots)
+                or match_duration_seconds
+            )
 
         kills = int(player.get("kills", 0))
         deaths = int(player.get("deaths", 0))
         assists = int(player.get("assists", 0))
         dpm = float(player.get("damage_per_minute", 0.0))
         healing = int(player.get("healing_done", 0))
+        damage_received = int(player.get("damage_received", 0))
+        heals_received = int(player.get("heals_received", 0))
+        ubers = int(player.get("ubers", 0))
+        drops = int(player.get("drops", 0))
+        captures = int(player.get("captures", 0))
+        headshots = int(player.get("headshots", 0))
+        backstabs = int(player.get("backstabs", 0))
+        airshots = int(player.get("airshots", 0))
         team = str(player.get("team", "unknown"))
 
         statement = select(PlayerMatchStatsProjection).where(
@@ -521,6 +799,14 @@ class ProjectionService:
                     assists=assists,
                     damage_per_minute=dpm,
                     healing_done=healing,
+                    damage_received=damage_received,
+                    heals_received=heals_received,
+                    ubers=ubers,
+                    drops=drops,
+                    captures=captures,
+                    headshots=headshots,
+                    backstabs=backstabs,
+                    airshots=airshots,
                     rating=1.0,
                 )
             )
@@ -534,11 +820,23 @@ class ProjectionService:
             existing.assists = assists
             existing.damage_per_minute = dpm
             existing.healing_done = healing
+            existing.damage_received = damage_received
+            existing.heals_received = heals_received
+            existing.ubers = ubers
+            existing.drops = drops
+            existing.captures = captures
+            existing.headshots = headshots
+            existing.backstabs = backstabs
+            existing.airshots = airshots
 
         await self.session.flush()
         await self._upsert_player_identity_bootstrap(
             steam_id=steam_id,
-            display_name=(str(player["display_name"]).strip() if player.get("display_name") else None),
+            display_name=(
+                str(player["display_name"]).strip()
+                if player.get("display_name")
+                else None
+            ),
         )
         await self._replace_class_rows(
             steam_id=steam_id,
@@ -562,13 +860,17 @@ class ProjectionService:
         match_duration_seconds: int,
     ) -> None:
         existing_rows = (
-            await self.session.execute(
-                select(PlayerMatchClassStatsProjection).where(
-                    PlayerMatchClassStatsProjection.steam_id == steam_id,
-                    PlayerMatchClassStatsProjection.match_id == match_id,
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection).where(
+                        PlayerMatchClassStatsProjection.steam_id == steam_id,
+                        PlayerMatchClassStatsProjection.match_id == match_id,
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for row in existing_rows:
             await self.session.delete(row)
         await self.session.flush()
@@ -576,7 +878,11 @@ class ProjectionService:
         for snap in class_snapshots:
             playtime = int(snap.playtime_seconds or 0) or match_duration_seconds
             class_name = normalize_class_name(snap.class_name)
-            class_id = int(snap.class_id) if snap.class_id is not None else class_id_from_name(class_name)
+            class_id = (
+                int(snap.class_id)
+                if snap.class_id is not None
+                else class_id_from_name(class_name)
+            )
             self.session.add(
                 PlayerMatchClassStatsProjection(
                     steam_id=steam_id,
@@ -594,12 +900,6 @@ class ProjectionService:
                     damage_dealt=int(snap.damage_dealt or 0),
                     damage_received=int(snap.damage_received or 0),
                     heals_received=int(snap.heals_received or 0),
-                    captures=int(snap.captures or 0),
-                    headshots=int(snap.headshots or 0),
-                    backstabs=int(snap.backstabs or 0),
-                    airshots=int(snap.airshots or 0),
-                    ubers=int(snap.ubers or 0),
-                    drops=int(snap.drops or 0),
                     healing_done=int(snap.healing_done or 0),
                     rating=1.0,
                 )
@@ -609,8 +909,50 @@ class ProjectionService:
     async def rebuild_ratings(self) -> None:
         """Recompute class benchmarks and apply ratings to all class/match/player rows."""
         class_rows = (
-            await self.session.execute(select(PlayerMatchClassStatsProjection))
-        ).scalars().all()
+            (await self.session.execute(select(PlayerMatchClassStatsProjection)))
+            .scalars()
+            .all()
+        )
+        match_player_rows = (
+            (await self.session.execute(select(PlayerMatchStatsProjection)))
+            .scalars()
+            .all()
+        )
+        player_by_key = {(row.steam_id, row.match_id): row for row in match_player_rows}
+
+        by_match_player: dict[
+            tuple[str, str], list[PlayerMatchClassStatsProjection]
+        ] = defaultdict(list)
+        for row in class_rows:
+            by_match_player[(row.steam_id, row.match_id)].append(row)
+
+        def _rating_captures(row: PlayerMatchClassStatsProjection) -> int:
+            group = by_match_player.get((row.steam_id, row.match_id), [])
+            if not group:
+                return 0
+            primary = max(group, key=lambda item: int(item.playtime_seconds or 0))
+            if int(row.class_id) != int(primary.class_id):
+                return 0
+            player = player_by_key.get((row.steam_id, row.match_id))
+            if player is None:
+                return 0
+            return int(getattr(player, "captures", 0) or 0)
+
+        def _rating_medic_ubers(row: PlayerMatchClassStatsProjection) -> int:
+            if normalize_class_name(row.class_name) != "medic":
+                return 0
+            player = player_by_key.get((row.steam_id, row.match_id))
+            if player is None:
+                return 0
+            return int(getattr(player, "ubers", 0) or 0)
+
+        def _rating_medic_drops(row: PlayerMatchClassStatsProjection) -> int:
+            if normalize_class_name(row.class_name) != "medic":
+                return 0
+            player = player_by_key.get((row.steam_id, row.match_id))
+            if player is None:
+                return 0
+            return int(getattr(player, "drops", 0) or 0)
 
         rating_inputs = [
             rating_row_from_mapping(
@@ -625,10 +967,10 @@ class ProjectionService:
                     "damage_dealt": row.damage_dealt,
                     "damage_received": row.damage_received,
                     "heals_received": row.heals_received,
-                    "captures": row.captures,
+                    "captures": _rating_captures(row),
                     "healing_done": row.healing_done,
-                    "ubers": row.ubers,
-                    "drops": row.drops,
+                    "ubers": _rating_medic_ubers(row),
+                    "drops": _rating_medic_drops(row),
                     "steam_id": row.steam_id,
                     "match_id": row.match_id,
                 }
@@ -638,19 +980,24 @@ class ProjectionService:
         benchmarks = RatingService.build_class_benchmarks(rating_inputs)
 
         existing_benchmarks = (
-            await self.session.execute(select(ClassRatingBenchmarkProjection))
-        ).scalars().all()
+            (await self.session.execute(select(ClassRatingBenchmarkProjection)))
+            .scalars()
+            .all()
+        )
         for row in existing_benchmarks:
             if int(row.class_id) not in benchmarks:
                 await self.session.delete(row)
 
         for class_id, payload in benchmarks.items():
-            existing = await self.session.get(ClassRatingBenchmarkProjection, int(class_id))
+            existing = await self.session.get(
+                ClassRatingBenchmarkProjection, int(class_id)
+            )
             if existing is None:
                 self.session.add(
                     ClassRatingBenchmarkProjection(
                         class_id=int(class_id),
-                        class_name=payload.get("class_name") or class_name_from_id(int(class_id)),
+                        class_name=payload.get("class_name")
+                        or class_name_from_id(int(class_id)),
                         sample_size=int(payload["sample_size"]),
                         raw_p05=float(payload["raw_p05"]),
                         raw_p95=float(payload["raw_p95"]),
@@ -665,7 +1012,9 @@ class ProjectionService:
                         p90_rating=float(payload["p90_rating"]),
                         metric_means=dict(payload.get("metric_means") or {}),
                         metric_stds=dict(payload.get("metric_stds") or {}),
-                        updated_at=parse_utc_naive(payload["updated_at"]) if payload.get("updated_at") else utcnow(),
+                        updated_at=parse_utc_naive(payload["updated_at"])
+                        if payload.get("updated_at")
+                        else utcnow(),
                     )
                 )
             else:
@@ -700,28 +1049,44 @@ class ProjectionService:
 
         await self.session.flush()
 
-        by_match_player: dict[tuple[str, str], list[PlayerMatchClassStatsProjection]] = defaultdict(list)
+        by_match_player: dict[
+            tuple[str, str], list[PlayerMatchClassStatsProjection]
+        ] = defaultdict(list)
         for row in class_rows:
             by_match_player[(row.steam_id, row.match_id)].append(row)
 
-        match_rows = (await self.session.execute(select(PlayerMatchStatsProjection))).scalars().all()
+        match_rows = (
+            (await self.session.execute(select(PlayerMatchStatsProjection)))
+            .scalars()
+            .all()
+        )
         for match_row in match_rows:
-            class_group = by_match_player.get((match_row.steam_id, match_row.match_id), [])
+            class_group = by_match_player.get(
+                (match_row.steam_id, match_row.match_id), []
+            )
             match_row.rating = _playtime_weighted_rating(class_group)
 
         await self.session.flush()
 
-        steam_ids = {row.steam_id for row in match_rows} | {row.steam_id for row in class_rows}
+        steam_ids = {row.steam_id for row in match_rows} | {
+            row.steam_id for row in class_rows
+        }
         for steam_id in steam_ids:
             await self._recompute_lifetime(steam_id)
             await self._recompute_class_stats(steam_id)
 
     async def _recompute_lifetime(self, steam_id: str) -> None:
         rows = (
-            await self.session.execute(
-                select(PlayerMatchStatsProjection).where(PlayerMatchStatsProjection.steam_id == steam_id)
+            (
+                await self.session.execute(
+                    select(PlayerMatchStatsProjection).where(
+                        PlayerMatchStatsProjection.steam_id == steam_id
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not rows:
             return
 
@@ -759,18 +1124,28 @@ class ProjectionService:
 
     async def _recompute_class_stats(self, steam_id: str) -> None:
         class_rows = (
-            await self.session.execute(
-                select(PlayerMatchClassStatsProjection).where(
-                    PlayerMatchClassStatsProjection.steam_id == steam_id
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection).where(
+                        PlayerMatchClassStatsProjection.steam_id == steam_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         existing_rows = (
-            await self.session.execute(
-                select(PlayerClassStatsProjection).where(PlayerClassStatsProjection.steam_id == steam_id)
+            (
+                await self.session.execute(
+                    select(PlayerClassStatsProjection).where(
+                        PlayerClassStatsProjection.steam_id == steam_id
+                    )
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for row in existing_rows:
             await self.session.delete(row)
         await self.session.flush()
@@ -783,8 +1158,20 @@ class ProjectionService:
             matches_played = len({row.match_id for row in rows}) or len(rows)
             total_playtime = sum(max(int(row.playtime_seconds or 0), 0) for row in rows)
             if total_playtime > 0:
-                avg_dpm = sum(float(row.dpm) * max(int(row.playtime_seconds or 0), 0) for row in rows) / total_playtime
-                avg_rating = sum(float(row.rating) * max(int(row.playtime_seconds or 0), 0) for row in rows) / total_playtime
+                avg_dpm = (
+                    sum(
+                        float(row.dpm) * max(int(row.playtime_seconds or 0), 0)
+                        for row in rows
+                    )
+                    / total_playtime
+                )
+                avg_rating = (
+                    sum(
+                        float(row.rating) * max(int(row.playtime_seconds or 0), 0)
+                        for row in rows
+                    )
+                    / total_playtime
+                )
             else:
                 avg_dpm = sum(float(row.dpm) for row in rows) / len(rows)
                 avg_rating = sum(float(row.rating) for row in rows) / len(rows)
@@ -808,12 +1195,25 @@ class ProjectionService:
         skip: int = 0,
         limit: int = 20,
         tournament_id: str | None = None,
+        event_id: str | None = None,
     ) -> list[MatchSummaryView]:
         statement = select(MatchSummaryProjection).order_by(
             col(MatchSummaryProjection.date_played).desc()
         )
         if tournament_id:
-            statement = statement.where(MatchSummaryProjection.tournament_id == tournament_id)
+            statement = statement.where(
+                MatchSummaryProjection.tournament_id == tournament_id
+            )
+        elif event_id:
+            event = await self.session.get(EventSummaryProjection, str(event_id))
+            tournament_ids = (
+                [str(tid) for tid in (event.tournaments or [])] if event else []
+            )
+            if not tournament_ids:
+                return []
+            statement = statement.where(
+                col(MatchSummaryProjection.tournament_id).in_(tournament_ids)
+            )
         statement = statement.offset(skip).limit(limit)
         rows = (await self.session.execute(statement)).scalars().all()
         return [self._match_summary_view(row) for row in rows]
@@ -826,6 +1226,8 @@ class ProjectionService:
             map_name=row.map_name,
             duration_seconds=row.duration_seconds,
             winning_team=row.winning_team,
+            blu_score=int(getattr(row, "blu_score", 0) or 0),
+            red_score=int(getattr(row, "red_score", 0) or 0),
             date_played=row.date_played,
             ratings_ready=bool(getattr(row, "ratings_ready", False)),
         )
@@ -841,12 +1243,16 @@ class ProjectionService:
 
         if key.isdigit():
             return (
-                await self.session.execute(
-                    select(MatchSummaryProjection).where(
-                        MatchSummaryProjection.source_log_id == int(key)
+                (
+                    await self.session.execute(
+                        select(MatchSummaryProjection).where(
+                            MatchSummaryProjection.source_log_id == int(key)
+                        )
                     )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
 
         return None
 
@@ -856,54 +1262,271 @@ class ProjectionService:
             return None
         resolved_id = str(row.match_id)
         player_rows = (
-            await self.session.execute(
-                select(PlayerMatchStatsProjection).where(
-                    PlayerMatchStatsProjection.match_id == resolved_id
+            (
+                await self.session.execute(
+                    select(PlayerMatchStatsProjection).where(
+                        PlayerMatchStatsProjection.match_id == resolved_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
+        class_rows = (
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection).where(
+                        PlayerMatchClassStatsProjection.match_id == resolved_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        class_by_steam: dict[str, list[PlayerMatchClassStatsProjection]] = defaultdict(
+            list
+        )
+        for class_row in class_rows:
+            class_by_steam[class_row.steam_id].append(class_row)
+
         names = await self._display_names([player.steam_id for player in player_rows])
         return {
             "match_summary": self._match_summary_view(row),
             "players": [
-                PlayerStatsView(
-                    steam_id=player.steam_id,
+                self._player_match_view(
+                    player,
                     display_name=names.get(player.steam_id),
-                    match_id=_as_uuid(player.match_id),
-                    team=player.team,
-                    classes_played=list(player.classes_played or []),
-                    primary_class=player.primary_class,
-                    playtime_seconds=player.playtime_seconds,
-                    kills=player.kills,
-                    deaths=player.deaths,
-                    assists=player.assists,
-                    damage_per_minute=player.damage_per_minute,
-                    healing_done=player.healing_done,
-                    rating=round(float(player.rating), 3),
+                    class_rows=class_by_steam.get(player.steam_id, []),
                 )
                 for player in player_rows
             ],
         }
 
+    def _class_stat_view(self, row: PlayerMatchClassStatsProjection) -> ClassStatView:
+        return ClassStatView(
+            class_name=row.class_name,
+            class_id=int(row.class_id or 0),
+            playtime_seconds=int(row.playtime_seconds or 0),
+            kills=int(row.kills or 0),
+            deaths=int(row.deaths or 0),
+            assists=int(row.assists or 0),
+            dpm=float(row.dpm or 0.0),
+            primary_accuracy=float(row.primary_accuracy or 0.0),
+            damage_dealt=int(row.damage_dealt or 0),
+            damage_received=int(row.damage_received or 0),
+            heals_received=int(row.heals_received or 0),
+            healing_done=int(row.healing_done or 0),
+            rating=round(float(row.rating or 1.0), 3),
+        )
+
+    def _player_match_view(
+        self,
+        player: PlayerMatchStatsProjection,
+        *,
+        display_name: str | None,
+        class_rows: list[PlayerMatchClassStatsProjection],
+    ) -> PlayerStatsView:
+        class_stats = [self._class_stat_view(row) for row in class_rows]
+        class_stats.sort(key=lambda snap: snap.playtime_seconds, reverse=True)
+
+        # Prefer stored player totals; fall back to class rows for older projections.
+        # logs.tf-derived class rows often repeat player-level DT/HR on every class,
+        # so use max (not sum) for those.
+        damage_received = int(getattr(player, "damage_received", 0) or 0)
+        heals_received = int(getattr(player, "heals_received", 0) or 0)
+        ubers = int(getattr(player, "ubers", 0) or 0)
+        drops = int(getattr(player, "drops", 0) or 0)
+        captures = int(getattr(player, "captures", 0) or 0)
+        headshots = int(getattr(player, "headshots", 0) or 0)
+        backstabs = int(getattr(player, "backstabs", 0) or 0)
+        airshots = int(getattr(player, "airshots", 0) or 0)
+        if (
+            class_rows
+            and captures == 0
+            and headshots == 0
+            and backstabs == 0
+            and airshots == 0
+        ):
+            captures = max(
+                (int(getattr(row, "captures", 0) or 0) for row in class_rows), default=0
+            )
+            headshots = max(
+                (int(getattr(row, "headshots", 0) or 0) for row in class_rows),
+                default=0,
+            )
+            backstabs = max(
+                (int(getattr(row, "backstabs", 0) or 0) for row in class_rows),
+                default=0,
+            )
+            airshots = max(
+                (int(getattr(row, "airshots", 0) or 0) for row in class_rows), default=0
+            )
+        if (
+            class_rows
+            and damage_received == 0
+            and heals_received == 0
+            and ubers == 0
+            and drops == 0
+        ):
+            damage_received = max(
+                (int(getattr(row, "damage_received", 0) or 0) for row in class_rows),
+                default=0,
+            )
+            heals_received = max(
+                (int(getattr(row, "heals_received", 0) or 0) for row in class_rows),
+                default=0,
+            )
+            ubers = sum(int(getattr(row, "ubers", 0) or 0) for row in class_rows)
+            drops = sum(int(getattr(row, "drops", 0) or 0) for row in class_rows)
+
+        return PlayerStatsView(
+            steam_id=player.steam_id,
+            display_name=display_name,
+            match_id=_as_uuid(player.match_id),
+            team=player.team,
+            classes_played=list(player.classes_played or []),
+            primary_class=player.primary_class,
+            playtime_seconds=player.playtime_seconds,
+            kills=player.kills,
+            deaths=player.deaths,
+            assists=player.assists,
+            damage_per_minute=player.damage_per_minute,
+            healing_done=player.healing_done,
+            damage_received=damage_received,
+            heals_received=heals_received,
+            ubers=ubers,
+            drops=drops,
+            captures=captures,
+            headshots=headshots,
+            backstabs=backstabs,
+            airshots=airshots,
+            rating=round(float(player.rating), 3),
+            class_stats=class_stats,
+        )
+
     async def list_tournaments(self) -> list[TournamentSummaryView]:
-        rows = (await self.session.execute(select(TournamentSummaryProjection))).scalars().all()
-        slug_order = {meta["slug"]: index for index, meta in enumerate(TOURNAMENT_CATALOG.values())}
+        rows = (
+            (await self.session.execute(select(TournamentSummaryProjection)))
+            .scalars()
+            .all()
+        )
+        slug_order = {
+            meta["slug"]: index
+            for index, meta in enumerate(TOURNAMENT_CATALOG.values())
+        }
         slug_order.setdefault("default-tournament", len(slug_order))
 
         def sort_key(row: TournamentSummaryProjection) -> tuple[int, str]:
             return (slug_order.get(row.slug, 10_000), row.name.lower())
 
         ordered = sorted(rows, key=sort_key)
-        return [
-            TournamentSummaryView(
-                tournament_id=_as_uuid(row.tournament_id),
-                name=row.name,
-                slug=row.slug,
-                match_count=row.match_count,
-                started_at=row.started_at,
+        return [self._tournament_summary_view(row) for row in ordered]
+
+    def _tournament_summary_view(
+        self, row: TournamentSummaryProjection
+    ) -> TournamentSummaryView:
+        return TournamentSummaryView(
+            tournament_id=_as_uuid(row.tournament_id),
+            name=row.name,
+            slug=row.slug,
+            match_count=row.match_count,
+            started_at=row.started_at,
+            event_id=_as_uuid(row.event_id) if row.event_id else None,
+        )
+
+    async def _event_match_count(self, tournament_ids: list[str]) -> int:
+        if not tournament_ids:
+            return 0
+        return int(
+            (
+                await self.session.execute(
+                    select(func.count())
+                    .select_from(MatchSummaryProjection)
+                    .where(col(MatchSummaryProjection.tournament_id).in_(tournament_ids))
+                )
+            ).scalar_one()
+            or 0
+        )
+
+    async def _event_summary_view(self, row: EventSummaryProjection) -> EventSummaryView:
+        tournament_ids = [str(tid) for tid in (row.tournaments or []) if tid]
+        uuids: list[UUID] = []
+        for tournament_id in tournament_ids:
+            try:
+                uuids.append(_as_uuid(tournament_id))
+            except (TypeError, ValueError):
+                continue
+        return EventSummaryView(
+            event_id=_as_uuid(row.event_id),
+            name=row.name,
+            slug=row.slug,
+            start_date=row.start_date or row.started_at,
+            end_date=row.end_date,
+            tournament_ids=uuids,
+            tournament_count=len(uuids),
+            match_count=await self._event_match_count(tournament_ids),
+        )
+
+    async def list_events(self) -> list[EventSummaryView]:
+        rows = (
+            (await self.session.execute(select(EventSummaryProjection))).scalars().all()
+        )
+
+        def sort_key(row: EventSummaryProjection) -> tuple[datetime | str, str]:
+            start = row.start_date or row.started_at
+            return (start or datetime.max, row.name.lower())
+
+        ordered = sorted(rows, key=sort_key)
+        return [await self._event_summary_view(row) for row in ordered]
+
+    async def get_event(self, event_id: str) -> EventDetailView | None:
+        row = await self.session.get(EventSummaryProjection, str(event_id))
+        if row is None:
+            return None
+        tournament_ids = [str(tid) for tid in (row.tournaments or []) if tid]
+        tournaments: list[TournamentSummaryView] = []
+        if tournament_ids:
+            tournament_rows = (
+                (
+                    await self.session.execute(
+                        select(TournamentSummaryProjection).where(
+                            col(TournamentSummaryProjection.tournament_id).in_(
+                                tournament_ids
+                            )
+                        )
+                    )
+                )
+                .scalars()
+                .all()
             )
-            for row in ordered
-        ]
+            by_id = {item.tournament_id: item for item in tournament_rows}
+            tournaments = [
+                self._tournament_summary_view(by_id[tid])
+                for tid in tournament_ids
+                if tid in by_id
+            ]
+        return EventDetailView(
+            event=await self._event_summary_view(row),
+            tournaments=tournaments,
+        )
+
+    async def get_event_leaderboard(
+        self,
+        event_id: str,
+        class_name: str | None = None,
+        limit: int = 50,
+    ) -> list[LeaderboardEntryView]:
+        row = await self.session.get(EventSummaryProjection, str(event_id))
+        if row is None:
+            return []
+        tournament_ids = [str(tid) for tid in (row.tournaments or []) if tid]
+        entries = await self._compute_leaderboard_entries(
+            tournament_ids, class_name=class_name
+        )
+        names = await self._display_names([entry.steam_id for entry in entries])
+        for entry in entries:
+            entry.display_name = names.get(entry.steam_id) or entry.display_name
+        return entries[: max(1, min(limit, 200))]
 
     async def get_tournament_leaderboard(
         self,
@@ -939,49 +1562,76 @@ class ProjectionService:
 
     async def refresh_all_tournament_leaderboards(self) -> None:
         tournament_ids = (
-            await self.session.execute(
-                select(PlayerMatchClassStatsProjection.tournament_id).where(
-                    PlayerMatchClassStatsProjection.tournament_id.is_not(None)
-                ).distinct()
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection.tournament_id)
+                    .where(PlayerMatchClassStatsProjection.tournament_id.is_not(None))
+                    .distinct()
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         match_tournament_ids = (
-            await self.session.execute(
-                select(MatchSummaryProjection.tournament_id).where(
-                    MatchSummaryProjection.tournament_id.is_not(None)
-                ).distinct()
+            (
+                await self.session.execute(
+                    select(MatchSummaryProjection.tournament_id)
+                    .where(MatchSummaryProjection.tournament_id.is_not(None))
+                    .distinct()
+                )
             )
-        ).scalars().all()
-        ids = {str(tid) for tid in list(tournament_ids) + list(match_tournament_ids) if tid}
+            .scalars()
+            .all()
+        )
+        ids = {
+            str(tid) for tid in list(tournament_ids) + list(match_tournament_ids) if tid
+        }
         for tournament_id in ids:
             await self.refresh_tournament_leaderboard(tournament_id)
 
     async def refresh_tournament_leaderboard(self, tournament_id: str) -> None:
         """Recompute and upsert all-classes + per-class leaderboard snapshot rows."""
         now = utcnow()
-        all_entries = await self._compute_leaderboard_entries(tournament_id, class_name=None)
+        all_entries = await self._compute_leaderboard_entries(
+            tournament_id, class_name=None
+        )
         class_names = (
-            await self.session.execute(
-                select(PlayerMatchClassStatsProjection.class_name)
-                .where(PlayerMatchClassStatsProjection.tournament_id == tournament_id)
-                .distinct()
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection.class_name)
+                    .where(
+                        PlayerMatchClassStatsProjection.tournament_id == tournament_id
+                    )
+                    .distinct()
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
         partitions: list[tuple[str, list[LeaderboardEntryView]]] = [("", all_entries)]
         for raw_class in class_names:
             normalized = normalize_class_name(str(raw_class))
             partitions.append(
-                (normalized, await self._compute_leaderboard_entries(tournament_id, class_name=normalized))
+                (
+                    normalized,
+                    await self._compute_leaderboard_entries(
+                        tournament_id, class_name=normalized
+                    ),
+                )
             )
 
         existing_rows = (
-            await self.session.execute(
-                select(LeaderboardSnapshotProjection).where(
-                    LeaderboardSnapshotProjection.tournament_id == tournament_id
+            (
+                await self.session.execute(
+                    select(LeaderboardSnapshotProjection).where(
+                        LeaderboardSnapshotProjection.tournament_id == tournament_id
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         by_key = {(row.steam_id, row.class_name): row for row in existing_rows}
         seen: set[tuple[str, str]] = set()
 
@@ -1025,41 +1675,62 @@ class ProjectionService:
 
     async def _compute_leaderboard_entries(
         self,
-        tournament_id: str,
+        tournament_id: str | list[str] | set[str],
         class_name: str | None = None,
     ) -> list[LeaderboardEntryView]:
+        tournament_ids = (
+            [str(tournament_id)]
+            if isinstance(tournament_id, str)
+            else [str(tid) for tid in tournament_id if tid]
+        )
+        if not tournament_ids:
+            return []
         # Prefer tournament_id stamped on per-class projection rows.
         class_statement = select(PlayerMatchClassStatsProjection).where(
-            PlayerMatchClassStatsProjection.tournament_id == tournament_id
+            col(PlayerMatchClassStatsProjection.tournament_id).in_(tournament_ids)
         )
         if class_name:
             class_statement = class_statement.where(
-                PlayerMatchClassStatsProjection.class_name == normalize_class_name(class_name)
+                PlayerMatchClassStatsProjection.class_name
+                == normalize_class_name(class_name)
             )
         class_rows = (await self.session.execute(class_statement)).scalars().all()
 
         if class_rows:
-            by_player: dict[str, list[PlayerMatchClassStatsProjection]] = defaultdict(list)
+            by_player: dict[str, list[PlayerMatchClassStatsProjection]] = defaultdict(
+                list
+            )
             for row in class_rows:
                 by_player[row.steam_id].append(row)
 
             entries: list[LeaderboardEntryView] = []
             for steam_id, player_rows in by_player.items():
-                matches_played = len({row.match_id for row in player_rows}) or len(player_rows)
+                matches_played = len({row.match_id for row in player_rows}) or len(
+                    player_rows
+                )
                 class_counts: dict[str, int] = defaultdict(int)
                 for row in player_rows:
                     class_counts[row.class_name] += 1
                 top_class = max(class_counts.items(), key=lambda item: item[1])[0]
-                total_playtime = sum(max(int(row.playtime_seconds or 0), 0) for row in player_rows)
+                total_playtime = sum(
+                    max(int(row.playtime_seconds or 0), 0) for row in player_rows
+                )
                 if total_playtime > 0:
                     avg_dpm = (
-                        sum(float(row.dpm) * max(int(row.playtime_seconds or 0), 0) for row in player_rows)
+                        sum(
+                            float(row.dpm) * max(int(row.playtime_seconds or 0), 0)
+                            for row in player_rows
+                        )
                         / total_playtime
                     )
                     avg_rating = _playtime_weighted_rating(player_rows)
                 else:
-                    avg_dpm = sum(float(row.dpm) for row in player_rows) / len(player_rows)
-                    avg_rating = sum(float(row.rating) for row in player_rows) / len(player_rows)
+                    avg_dpm = sum(float(row.dpm) for row in player_rows) / len(
+                        player_rows
+                    )
+                    avg_rating = sum(float(row.rating) for row in player_rows) / len(
+                        player_rows
+                    )
                 entries.append(
                     LeaderboardEntryView(
                         steam_id=steam_id,
@@ -1078,12 +1749,16 @@ class ProjectionService:
 
         # Fallback for legacy projections that lack tournament_id on class rows.
         match_ids = (
-            await self.session.execute(
-                select(MatchSummaryProjection.match_id).where(
-                    MatchSummaryProjection.tournament_id == tournament_id
+            (
+                await self.session.execute(
+                    select(MatchSummaryProjection.match_id).where(
+                        col(MatchSummaryProjection.tournament_id).in_(tournament_ids)
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         if not match_ids:
             return []
 
@@ -1092,7 +1767,8 @@ class ProjectionService:
         )
         if class_name:
             statement = statement.where(
-                PlayerMatchStatsProjection.primary_class == normalize_class_name(class_name)
+                PlayerMatchStatsProjection.primary_class
+                == normalize_class_name(class_name)
             )
         rows = (await self.session.execute(statement)).scalars().all()
 
@@ -1115,10 +1791,13 @@ class ProjectionService:
                     total_deaths=sum(r.deaths for r in player_rows),
                     total_assists=sum(r.assists for r in player_rows),
                     average_damage_per_minute=round(
-                        sum(r.damage_per_minute for r in player_rows) / matches_played, 2
+                        sum(r.damage_per_minute for r in player_rows) / matches_played,
+                        2,
                     ),
                     total_healing_done=sum(r.healing_done for r in player_rows),
-                    average_rating=round(sum(r.rating for r in player_rows) / matches_played, 3),
+                    average_rating=round(
+                        sum(r.rating for r in player_rows) / matches_played, 3
+                    ),
                     primary_class=top_class,
                 )
             )
@@ -1139,7 +1818,8 @@ class ProjectionService:
                 select(PlayerMatchStatsProjection, MatchSummaryProjection)
                 .join(
                     MatchSummaryProjection,
-                    MatchSummaryProjection.match_id == PlayerMatchStatsProjection.match_id,
+                    MatchSummaryProjection.match_id
+                    == PlayerMatchStatsProjection.match_id,
                 )
                 .where(col(PlayerMatchStatsProjection.steam_id).in_(candidate_ids))
                 .order_by(col(MatchSummaryProjection.date_played).desc())
@@ -1167,12 +1847,16 @@ class ProjectionService:
         resolved_id, row = await self._resolve_lifetime_stats_row(steam_id)
         candidate_ids = self._player_id_candidates(steam_id) or [resolved_id]
         class_rows = (
-            await self.session.execute(
-                select(PlayerClassStatsProjection)
-                .where(col(PlayerClassStatsProjection.steam_id).in_(candidate_ids))
-                .order_by(col(PlayerClassStatsProjection.matches_played).desc())
+            (
+                await self.session.execute(
+                    select(PlayerClassStatsProjection)
+                    .where(col(PlayerClassStatsProjection.steam_id).in_(candidate_ids))
+                    .order_by(col(PlayerClassStatsProjection.matches_played).desc())
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         class_breakdown = [
             PlayerClassAggregateView(
                 class_name=item.class_name,
@@ -1180,7 +1864,9 @@ class ProjectionService:
                 total_kills=item.total_kills,
                 total_deaths=item.total_deaths,
                 total_assists=item.total_assists,
-                average_damage_per_minute=round(float(item.average_damage_per_minute), 2),
+                average_damage_per_minute=round(
+                    float(item.average_damage_per_minute), 2
+                ),
                 total_healing_done=item.total_healing_done,
                 average_rating=round(float(item.average_rating), 3),
             )
@@ -1220,12 +1906,16 @@ class ProjectionService:
 
     async def list_benchmarks(self) -> list[ClassRatingBenchmarkView]:
         rows = (
-            await self.session.execute(
-                select(ClassRatingBenchmarkProjection).order_by(
-                    col(ClassRatingBenchmarkProjection.class_id).asc()
+            (
+                await self.session.execute(
+                    select(ClassRatingBenchmarkProjection).order_by(
+                        col(ClassRatingBenchmarkProjection.class_id).asc()
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         return [
             ClassRatingBenchmarkView(
                 class_name=row.class_name,
@@ -1251,10 +1941,16 @@ class ProjectionService:
         if q.isdigit():
             log_id = int(q)
             match_row = (
-                await self.session.execute(
-                    select(MatchSummaryProjection).where(MatchSummaryProjection.source_log_id == log_id)
+                (
+                    await self.session.execute(
+                        select(MatchSummaryProjection).where(
+                            MatchSummaryProjection.source_log_id == log_id
+                        )
+                    )
                 )
-            ).scalars().first()
+                .scalars()
+                .first()
+            )
             if match_row:
                 results.append(
                     SearchResultView(
@@ -1279,7 +1975,9 @@ class ProjectionService:
             )
 
         for candidate in self._player_id_candidates(q):
-            player_row = await self.session.get(PlayerLifetimeStatsProjection, candidate)
+            player_row = await self.session.get(
+                PlayerLifetimeStatsProjection, candidate
+            )
             if player_row and player_row.matches_played > 0:
                 names = await self._display_names([player_row.steam_id])
                 display_name = names.get(player_row.steam_id)
@@ -1297,19 +1995,25 @@ class ProjectionService:
 
         like = f"%{q}%"
         identity_rows = (
-            await self.session.execute(
-                select(PlayerIdentityProjection)
-                .where(
-                    or_(
-                        col(PlayerIdentityProjection.persona_name).ilike(like),
-                        col(PlayerIdentityProjection.custom_alias).ilike(like),
+            (
+                await self.session.execute(
+                    select(PlayerIdentityProjection)
+                    .where(
+                        or_(
+                            col(PlayerIdentityProjection.persona_name).ilike(like),
+                            col(PlayerIdentityProjection.custom_alias).ilike(like),
+                        )
                     )
+                    .limit(limit)
                 )
-                .limit(limit)
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for identity in identity_rows:
-            player_row = await self.session.get(PlayerLifetimeStatsProjection, identity.steam_id)
+            player_row = await self.session.get(
+                PlayerLifetimeStatsProjection, identity.steam_id
+            )
             if player_row is None or player_row.matches_played <= 0:
                 continue
             display_name = identity.custom_alias or identity.persona_name
@@ -1325,12 +2029,16 @@ class ProjectionService:
             )
 
         steam_rows = (
-            await self.session.execute(
-                select(PlayerLifetimeStatsProjection)
-                .where(col(PlayerLifetimeStatsProjection.steam_id).like(like))
-                .limit(limit)
+            (
+                await self.session.execute(
+                    select(PlayerLifetimeStatsProjection)
+                    .where(col(PlayerLifetimeStatsProjection.steam_id).like(like))
+                    .limit(limit)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         names = await self._display_names([row.steam_id for row in steam_rows])
         for row in steam_rows:
             display_name = names.get(row.steam_id)

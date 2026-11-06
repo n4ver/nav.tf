@@ -14,19 +14,24 @@ from ...shared.auth.urls import resolve_frontend_url, resolve_steam_openid_urls
 from ...shared.broker import close_broker
 from ...shared.cors import add_cors_middleware
 from ...shared.schemas import (
+    AssignMatchTournamentCommand,
     AuthCodeExchangeRequest,
     AuthTokenResponse,
     AuthUserView,
     CachedLogIngest,
+    CreateEventCommand,
     CreateTournamentCommand,
     IngestLogsTfCommand,
+    LinkTournamentToEventCommand,
     RawLogUpload,
+    UpdateEventCommand,
     UpdatePlayerDisplayNameCommand,
     UpdateTournamentCommand,
 )
 from .auth_service import AuthService
 from .db import get_write_session, init_write_db
 from .dependencies import AuthenticatedUser, get_current_admin_user, get_current_user
+from .outbox_worker import start_outbox_worker, stop_outbox_worker
 from .services import CommandService
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await init_write_db()
+    start_outbox_worker()
     yield
+    await stop_outbox_worker()
     await close_broker()
 
 
@@ -44,7 +51,9 @@ add_cors_middleware(app)
 
 
 @app.exception_handler(Exception)
-async def unhandled_exception_handler(_request: Request, exc: Exception) -> JSONResponse:
+async def unhandled_exception_handler(
+    _request: Request, exc: Exception
+) -> JSONResponse:
     logger.exception("Unhandled command service error")
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})
 
@@ -172,7 +181,56 @@ async def update_tournament(
     admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
 ) -> dict[str, object]:
     service = CommandService(session)
-    return await service.update_tournament(tournament_id, payload, actor_id=admin.steam_id)
+    return await service.update_tournament(
+        tournament_id, payload, actor_id=admin.steam_id
+    )
+
+
+@app.patch("/api/v1/commands/tournaments/{tournament_id}/event", status_code=202)
+async def link_tournament_to_event(
+    tournament_id: str,
+    payload: LinkTournamentToEventCommand,
+    session: Annotated[AsyncSession, Depends(get_write_session)],
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    service = CommandService(session)
+    return await service.link_tournament_to_event(
+        tournament_id, payload, actor_id=admin.steam_id
+    )
+
+
+@app.post("/api/v1/commands/events", status_code=202)
+async def create_event(
+    payload: CreateEventCommand,
+    session: Annotated[AsyncSession, Depends(get_write_session)],
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    service = CommandService(session)
+    return await service.create_event(payload, actor_id=admin.steam_id)
+
+
+@app.patch("/api/v1/commands/events/{event_id}", status_code=202)
+async def update_event(
+    event_id: str,
+    payload: UpdateEventCommand,
+    session: Annotated[AsyncSession, Depends(get_write_session)],
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    service = CommandService(session)
+    return await service.update_event(event_id, payload, actor_id=admin.steam_id)
+
+
+@app.patch("/api/v1/commands/matches/{match_id}/tournament", status_code=202)
+async def assign_match_tournament(
+    match_id: str,
+    payload: AssignMatchTournamentCommand,
+    session: Annotated[AsyncSession, Depends(get_write_session)],
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    service = CommandService(session)
+    return await service.assign_match_tournament(
+        match_id, payload, actor_id=admin.steam_id
+    )
 
 
 @app.get("/health")

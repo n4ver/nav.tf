@@ -6,7 +6,8 @@ import asyncio
 import json
 import logging
 import os
-from typing import Any, Awaitable, Callable, Protocol
+from collections.abc import Awaitable, Callable
+from typing import Any, Protocol
 
 import aio_pika
 from aio_pika import ExchangeType, Message, connect_robust
@@ -49,7 +50,9 @@ class RabbitMQBroker:
     """Topic-exchange publisher with a durable query-side consumer queue."""
 
     def __init__(self, url: str | None = None, queue_name: str = QUEUE_NAME) -> None:
-        self.url = url or os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+        self.url = url or os.getenv(
+            "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
+        )
         self.queue_name = queue_name
         self._subscribers: list[EventHandler] = []
         self._connection: Any = None
@@ -87,25 +90,39 @@ class RabbitMQBroker:
             )
         except Exception as exc:
             if self._prefer_memory:
-                logger.warning("RabbitMQ publish failed (%s); using in-process bus", exc)
+                logger.warning(
+                    "RabbitMQ publish failed (%s); using in-process bus", exc
+                )
                 await self._fallback.publish(event_type, payload)
                 return
             logger.error("RabbitMQ publish failed for %s: %s", event_type, exc)
             raise RuntimeError(f"Failed to publish {event_type} to RabbitMQ") from exc
 
     async def _connect(self, *, declare_queue: bool) -> None:
-        if self._connection is not None and self._channel is not None and self._exchange is not None:
+        if (
+            self._connection is not None
+            and self._channel is not None
+            and self._exchange is not None
+        ):
             if declare_queue and self._queue is None:
-                self._queue = await self._channel.declare_queue(self.queue_name, durable=True)
-                await self._queue.bind(self._exchange, routing_key=f"{ROUTING_PREFIX}.#")
+                self._queue = await self._channel.declare_queue(
+                    self.queue_name, durable=True
+                )
+                await self._queue.bind(
+                    self._exchange, routing_key=f"{ROUTING_PREFIX}.#"
+                )
             return
 
         self._connection = await connect_robust(self.url)
         self._channel = await self._connection.channel()
         await self._channel.set_qos(prefetch_count=32)
-        self._exchange = await self._channel.declare_exchange(EXCHANGE_NAME, ExchangeType.TOPIC, durable=True)
+        self._exchange = await self._channel.declare_exchange(
+            EXCHANGE_NAME, ExchangeType.TOPIC, durable=True
+        )
         if declare_queue:
-            self._queue = await self._channel.declare_queue(self.queue_name, durable=True)
+            self._queue = await self._channel.declare_queue(
+                self.queue_name, durable=True
+            )
             await self._queue.bind(self._exchange, routing_key=f"{ROUTING_PREFIX}.#")
 
     async def _consume_loop(self) -> None:
