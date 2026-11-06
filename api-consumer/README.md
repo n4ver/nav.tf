@@ -33,6 +33,9 @@ See [Architecture design](../docs/architecture.md) for the dual-ingest rationale
 | Scheduled poll | node-cron | `POLL_CRON` (default `*/5 * * * *` in Docker) |
 | Manual poll | HTTP POST | `POST /admin/poll` |
 | Webhook | Express | `POST /webhooks/matcha/match` with `{"matchId": 201}` |
+| Admin UI | Command service proxy | Admin → Ingest → *Ingest from matcha.tf* calls `POST /api/v1/commands/sources/matcha/{matches,poll}`, which forwards here with the API key |
+
+The admin UI never sees `WEBHOOK_API_KEY`: the command service holds it as `API_CONSUMER_API_KEY` (falling back to `WEBHOOK_API_KEY`) and reaches this service at `API_CONSUMER_URL`. In local Docker, start the consumer with `docker compose --profile consumer up -d api-consumer`; without it the admin panel reports *api-consumer unreachable*.
 
 ## Ingest flow (matcha.tf)
 
