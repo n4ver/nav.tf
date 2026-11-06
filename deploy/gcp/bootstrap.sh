@@ -11,7 +11,7 @@
 #     BILLING_ACCOUNT=XXXXXX-XXXXXX-XXXXXX ./deploy/gcp/bootstrap.sh
 #
 # Optional: REGION (us-central1), ZONE (<region>-a), VM_NAME (navtf-prod),
-#   MACHINE_TYPE (e2-medium), DISK_SIZE_GB (30), GITHUB_REPO (n4ver/logdashboard),
+#   MACHINE_TYPE (e2-medium), DISK_SIZE_GB (30), GITHUB_REPO (n4ver/nav.tf),
 #   BUDGET_USD (50), WIF_POOL (github), DRY_RUN=1 (print mutating commands instead of running them).
 set -euo pipefail
 
@@ -23,7 +23,7 @@ ZONE="${ZONE:-${REGION}-a}"
 VM_NAME="${VM_NAME:-navtf-prod}"
 MACHINE_TYPE="${MACHINE_TYPE:-e2-medium}"
 DISK_SIZE_GB="${DISK_SIZE_GB:-30}"
-GITHUB_REPO="${GITHUB_REPO:-n4ver/logdashboard}"
+GITHUB_REPO="${GITHUB_REPO:-n4ver/nav.tf}"
 BUDGET_USD="${BUDGET_USD:-50}"
 BILLING_ACCOUNT="${BILLING_ACCOUNT:-}"
 DRY_RUN="${DRY_RUN:-0}"
@@ -195,6 +195,12 @@ if ! exists iam workload-identity-pools providers describe "$WIF_PROVIDER" \
     --display-name="GitHub OIDC" \
     --issuer-uri="https://token.actions.githubusercontent.com" \
     --attribute-mapping="google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref" \
+    --attribute-condition="assertion.repository == '${GITHUB_REPO}'"
+else
+  # Keep the condition in sync with GITHUB_REPO (e.g. after a repository rename);
+  # a stale one rejects every token with "rejected by the attribute condition".
+  run iam workload-identity-pools providers update-oidc "$WIF_PROVIDER" \
+    --workload-identity-pool="$WIF_POOL" --location=global \
     --attribute-condition="assertion.repository == '${GITHUB_REPO}'"
 fi
 run iam service-accounts add-iam-policy-binding "$DEPLOY_SA" \
