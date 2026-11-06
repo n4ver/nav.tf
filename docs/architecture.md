@@ -80,7 +80,9 @@ Cross-boundary DTOs and utilities only — no database session imports:
 - `events.py` — integration event envelopes
 - `schemas.py` — API request/response DTOs
 - `broker.py` — RabbitMQ publisher/consumer + in-memory test fallback
-- `rating.py` — class rating math (ported from legacy notebook)
+- `tf2_classes.py` — TF2 class names/ids shared by parsers and ratings
+
+Rating math lives on the query side in `query_service/app/rating/` (ported from the legacy notebook).
 - `auth/` — Steam OpenID, JWT, roles
 
 ## Data flow
@@ -102,7 +104,7 @@ POST /api/v1/commands/logs/*  (command :8001)
                     │
                     ├──► Upsert match/player projections
                     │
-                    └──► rebuild ratings inline → refresh leaderboard_snapshot_view
+                    └──► request rating rebuild → debounced worker rescores, refreshes leaderboards
                     │
                     ▼
              GET /api/v1/queries/*  (query :8002)  ◄── Web dashboard
@@ -131,7 +133,7 @@ Exchange: **`tf2-events`** (topic, durable). Queue: **`cqrs-query`** bound to ro
 
 | Event | Publisher | Consumer action |
 |---|---|---|
-| `MatchParsed` | Command, api-consumer | Upsert match/player projections; rebuild ratings inline; refresh tournament/event leaderboards |
+| `MatchParsed` | Command, api-consumer | Upsert match/player projections; request a coalesced rating rebuild (see [Rating pipeline](#rating-pipeline)) |
 | `LogEventCreated` | Command | Acknowledgment (query may log; no projection change) |
 | `PlayerAliasUpdated` | Command | Update player identity projection |
 | `TournamentCreated` / `TournamentUpdated` | Command | Upsert tournament summary |
@@ -139,7 +141,7 @@ Exchange: **`tf2-events`** (topic, durable). Queue: **`cqrs-query`** bound to ro
 | `TournamentLinkedToEvent` | Command | Set tournament.event_id; rewrite event tournament list; rebuild event player stats |
 | `MatchTournamentAssigned` | Command | Move match to a tournament; recount; refresh leaderboards and event stats |
 | `MatchLogIngested` | api-consumer | Audit/provenance (optional) |
-| `RatingsRebuildRequested` / `RatingsRebuilt` | Legacy | Kept for in-flight messages only; ratings now rebuild inline on `MatchParsed` |
+| `RatingsRebuildRequested` / `RatingsRebuilt` | Legacy | Kept for in-flight messages only; treated as a rebuild request |
 
 Event envelope shape (`server/cqrs/shared/events.py`):
 
@@ -154,6 +156,23 @@ Event envelope shape (`server/cqrs/shared/events.py`):
 ```
 
 Dead-letter exchange **`tf2-events.dlx`** handles exhausted retries from api-consumer (`failed.#` routing keys).
+
+### Delivery guarantees
+
+**Command → broker (transactional outbox).** Events are written to `outbox_events` in the same transaction as the domain change, then relayed by the command service (a post-commit kick plus a background worker).
+
+- A Postgres advisory lock allows one relayer at a time, across workers and replicas.
+- Rows publish in `id` (commit) order. If the head row fails or is still backing off, the relay stops, so later events never overtake it.
+- Failed publishes retry with exponential backoff (`OUTBOX_RETRY_BASE_MS` doubling up to `OUTBOX_RETRY_MAX_MS`). After `OUTBOX_MAX_ATTEMPTS` the row is marked `failed` so it stops blocking the queue. Rows with an unreadable payload are failed immediately.
+- Inspect and recover with `python -m cqrs.command_service.app.outbox_admin status|requeue-failed`.
+
+**Broker → query (idempotent consumer).** Each delivery is handled in one read-DB transaction that first claims its `event_id` in `processed_events`. Only a conflict on that claim counts as a duplicate; any other error rolls back and is retried.
+
+- Retries happen in place, with the message unacked and backoff from `CQRS_CONSUMER_RETRY_BASE_MS` up to `CQRS_CONSUMER_RETRY_MAX_MS`, so order is preserved.
+- After `CQRS_CONSUMER_MAX_ATTEMPTS` the message moves to **`cqrs-query.parking`** with `x-error` / `x-attempts` headers instead of being dropped. Malformed messages are parked immediately.
+- Infrastructure errors (database or network unreachable) don't count toward that limit. They retry indefinitely with capped backoff, so an outage pauses the queue instead of draining it into parking.
+- Replay with `python -m cqrs.query_service.app.parking count|replay`.
+- Handlers fail loudly when an event depends on state that is missing. For example, `MatchTournamentAssigned` for an unprojected match fails and ends up parked rather than being acked.
 
 ## Authentication and authorization
 
@@ -187,13 +206,18 @@ Init scripts: `server/dev-setup/docker/postgres/init-cqrs-databases.sql` (first 
 
 ## Rating pipeline
 
-Ratings are **never computed at request time** on the query API. After each `MatchParsed` projection:
+Ratings are **never computed at request time** on the query API. Class rows are scored against benchmarks computed over *every* class row, so each new match moves every rating. The rebuild is therefore global, but it runs once per burst of events rather than once per event:
 
-1. `PlayerMatchClassStatsProjection` stores per-class stat rows
-2. `ProjectionService.rebuild_ratings()` rebuilds `ClassRatingBenchmarkProjection` baselines **in the same handler**
-3. `RatingService` (from `query_service/app/rating/service.py`) scores every class row against benchmarks
-4. `leaderboard_snapshot_view` is refreshed for tournament leaderboards
-5. If the match's tournament is linked to an event, event player stats are rebuilt
+1. `MatchParsed` upserts the match, player and class projections (`ratings_ready = false` for that match) and bumps `rating_rebuild_state.request_seq`.
+2. The query service's rebuild worker (`query_service/app/rating_rebuild.py`) waits until events have been quiet for `RATING_REBUILD_DEBOUNCE_MS` (default 2 s), or `RATING_REBUILD_MAX_DELAY_MS` (default 30 s) after the first pending request. It then takes an advisory lock and, in one transaction:
+   - rebuilds `ClassRatingBenchmarkProjection` and rescores every class, match and lifetime row (`RatingService`, `query_service/app/rating/service.py`)
+   - marks the matches that were pending as `ratings_ready = true`
+   - refreshes **all** tournament leaderboards and event player stats, since every rating may have changed
+3. Steam persona names are resolved after that commit, outside the transaction.
+
+Requests that arrive during a rebuild leave `request_seq > completed_seq`, so another run follows. The web admin already polls `ratings_ready` after an ingest. On startup the worker queues a rebuild if any match is still unrated.
+
+`RATING_REBUILD_MODE=inline` runs the same rebuild synchronously after each event. This is the default with `CQRS_BROKER_MODE=memory`, which tests and the in-process seed use. `deferred` is the default otherwise.
 
 The `RatingsRebuildRequested` / `RatingsRebuilt` events are legacy compatibility only and are no longer published.
 

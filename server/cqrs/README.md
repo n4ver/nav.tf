@@ -21,7 +21,8 @@ cqrs/
     logs_tf_parser.py  # logs.tf JSON -> MatchCommandModel
     main.py            # Write API routes
     models.py          # Write DB tables (RawLogEvent, User, TournamentRecord)
-    outbox.py          # Transactional outbox
+    outbox.py          # Transactional outbox (ordered relay, backoff, requeue)
+    outbox_admin.py    # CLI: outbox status / requeue-failed
     outbox_worker.py   # Background outbox relay
     parsers.py         # SRCDS log -> MatchCommandModel
     services.py        # Command handlers
@@ -33,6 +34,8 @@ cqrs/
     idempotency.py     # Idempotency handler
     main.py            # Read API routes
     models.py          # Materialized views
+    parking.py         # CLI: count / replay parked events
+    rating_rebuild.py  # Debounced, coalesced rating rebuild worker
     services.py        # Projection + query handlers
   shared/
     auth/              # Steam OpenID, JWT, UserRole
@@ -220,7 +223,7 @@ Source log IDs come from [invite.txt](../dev-setup/seed/invite.txt).
 
 `MatchParsed` player payloads include nested `class_stats` (`ClassStatSnapshot`) with the full MatchStat/MedicStat field set used by the legacy notebook rating model.
 
-On the query side, `PlayerMatchClassStatsProjection` stores per-class rows. After each projection, `ProjectionService.rebuild_ratings()` rebuilds `ClassRatingBenchmarkProjection` baselines and scores every class row via `cqrs.shared.rating.RatingService`. Read APIs return precomputed ratings only.
+On the query side, `PlayerMatchClassStatsProjection` stores per-class rows. Each projection requests a rebuild. The debounced worker in `rating_rebuild.py` then runs `ProjectionService.rebuild_ratings()` once per burst of events: it rebuilds the `ClassRatingBenchmarkProjection` baselines and scores every class row via `query_service/app/rating/RatingService`. Read APIs return precomputed ratings only, and `ratings_ready` is false until the rebuild covering that match finishes. See [docs/architecture.md](../../docs/architecture.md#rating-pipeline).
 
 ## Event contract
 
