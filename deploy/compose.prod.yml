@@ -1,0 +1,211 @@
+# Production stack for a single VM. Only Caddy publishes ports.
+#
+# All variables come from /opt/navtf/.env, which deploy/vm/deploy.sh writes from
+# Secret Manager plus the non-secret config passed by CI. See deploy/README.md.
+#
+#   docker compose -f compose.prod.yml --env-file .env up -d
+
+name: navtf
+
+x-logging: &logging
+  # gcplogs ships container logs to Cloud Logging on GCE; docker's dual logging
+  # keeps `docker logs` working. Local smoke tests set LOG_DRIVER=json-file.
+  driver: ${LOG_DRIVER:-gcplogs}
+
+x-service-env: &service-env
+  APP_ENV: production
+  FRONTEND_URL: https://${DOMAIN:?DOMAIN is required}
+  RABBITMQ_URL: amqp://navtf:${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}@rabbitmq:5672/
+  CQRS_EXCHANGE_NAME: tf2-events
+  CQRS_QUERY_QUEUE: cqrs-query
+
+x-server-image: &server-image ${IMAGE_REGISTRY:?IMAGE_REGISTRY is required}/server:${IMAGE_TAG:?IMAGE_TAG is required}
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: navtf
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: cqrs_command
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U navtf -d cqrs_command"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+
+  db-init:
+    # Idempotently creates cqrs_query (cqrs_command is POSTGRES_DB).
+    image: postgres:15
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      POSTGRES_USER: navtf
+      POSTGRES_DB: cqrs_command
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ./postgres/ensure-cqrs-databases.sh:/ensure-cqrs-databases.sh:ro
+    entrypoint: ["bash", "/ensure-cqrs-databases.sh"]
+    restart: "no"
+    logging: *logging
+
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    hostname: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: navtf
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+    restart: unless-stopped
+    logging: *logging
+
+  command-service:
+    image: *server-image
+    command:
+      - uvicorn
+      - cqrs.command_service.app.main:app
+      - --host=0.0.0.0
+      - --port=8001
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    environment:
+      <<: *service-env
+      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://navtf:${POSTGRES_PASSWORD}@db:5432/cqrs_command
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-}
+      STEAM_OPENID_REALM: https://${DOMAIN}
+      STEAM_OPENID_RETURN_TO: https://${DOMAIN}/api/auth/steam/callback
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      BOOTSTRAP_ADMIN_STEAM_IDS: ${BOOTSTRAP_ADMIN_STEAM_IDS:-}
+      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  query-service:
+    image: *server-image
+    command:
+      - uvicorn
+      - cqrs.query_service.app.main:app
+      - --host=0.0.0.0
+      - --port=8002
+      - --proxy-headers
+      - --forwarded-allow-ips=*
+    environment:
+      <<: *service-env
+      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://navtf:${POSTGRES_PASSWORD}@db:5432/cqrs_query
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      # /health reports db_reachable; fail the check unless status is "ok".
+      test: ["CMD", "python", "-c", "import json, urllib.request; r = json.load(urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=4)); raise SystemExit(0 if r.get('status') == 'ok' else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    logging: *logging
+
+  caddy:
+    image: ${IMAGE_REGISTRY}/web:${IMAGE_TAG}
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      command-service:
+        condition: service_healthy
+      query-service:
+        condition: service_healthy
+    restart: unless-stopped
+    logging: *logging
+
+  api-consumer:
+    # Shipped but idle by default: set API_CONSUMER_POLL_ENABLED=true to start
+    # polling matcha.tf. Its webhook listener is internal only (not routed).
+    image: ${IMAGE_REGISTRY}/api-consumer:${IMAGE_TAG}
+    environment:
+      NODE_ENV: production
+      RABBITMQ_URL: amqp://navtf:${RABBITMQ_PASSWORD}@rabbitmq:5672/
+      CQRS_EXCHANGE_NAME: tf2-events
+      CQRS_DLX_NAME: tf2-events.dlx
+      POLL_ENABLED: ${API_CONSUMER_POLL_ENABLED:-false}
+      POLL_CRON: ${API_CONSUMER_POLL_CRON:-*/5 * * * *}
+      MATCHA_LEAGUE_ID: ${MATCHA_LEAGUE_ID:-1}
+      MATCHA_DIVISION_ID: ${MATCHA_DIVISION_ID:-1}
+      MATCHA_TOURNAMENT_NAME: ${MATCHA_TOURNAMENT_NAME:-Matcha.tf Minicup Invite}
+      MATCHA_TOURNAMENT_SLUG: ${MATCHA_TOURNAMENT_SLUG:-matcha-tf-minicup-invite}
+      WEBHOOK_ENABLED: "true"
+      WEBHOOK_API_KEY: ${WEBHOOK_API_KEY:?WEBHOOK_API_KEY is required}
+      ACTOR_ID: api-consumer
+      LOG_LEVEL: info
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8010/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+    logging: *logging
+
+  seed:
+    # One-shot sample data load: `deploy.sh seed` (never started by `up`).
+    image: *server-image
+    profiles: ["seed"]
+    command: ["python", "dev-setup/seed/seed_cqrs.py", "--http", "--no-fallback"]
+    environment:
+      <<: *service-env
+      COMMAND_SERVICE_URL: http://command-service:8001
+      QUERY_SERVICE_URL: http://query-service:8002
+      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://navtf:${POSTGRES_PASSWORD}@db:5432/cqrs_command
+      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://navtf:${POSTGRES_PASSWORD}@db:5432/cqrs_query
+      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-}
+    depends_on:
+      command-service:
+        condition: service_healthy
+      query-service:
+        condition: service_healthy
+    restart: "no"
+    logging: *logging
+
+volumes:
+  pgdata:
+  rabbitmq:
+  caddy_data:
+  caddy_config:
