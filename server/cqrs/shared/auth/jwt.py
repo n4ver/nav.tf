@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
@@ -40,7 +40,7 @@ def create_access_token(
     extra_claims: dict[str, Any] | None = None,
 ) -> str:
     role_value = role.value if isinstance(role, UserRole) else str(role)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     payload: dict[str, Any] = {
         "sub": steam_id,
         "steam_id": steam_id,

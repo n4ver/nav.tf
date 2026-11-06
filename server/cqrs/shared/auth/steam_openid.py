@@ -8,6 +8,8 @@ from urllib.parse import urlencode
 
 import httpx
 
+from .urls import PUBLIC_STEAM_CALLBACK_PATH
+
 STEAM_OPENID_LOGIN = "https://steamcommunity.com/openid/login"
 CLAIMED_ID_RE = re.compile(
     r"^https://steamcommunity\.com/openid/id/(\d{17})$",
@@ -36,7 +38,7 @@ class SteamOpenIdClient:
         self.return_to = (
             return_to
             or os.getenv("STEAM_OPENID_RETURN_TO")
-            or f"{self.realm}/api/v1/auth/steam/callback"
+            or f"{self.realm}{PUBLIC_STEAM_CALLBACK_PATH}"
         )
         self._client = http_client
 
@@ -60,12 +62,16 @@ class SteamOpenIdClient:
         if mode != "id_res":
             raise ValueError(f"Unexpected OpenID mode: {mode!r}")
 
-        claimed_id = params.get("openid.claimed_id") or params.get("openid.identity") or ""
+        claimed_id = (
+            params.get("openid.claimed_id") or params.get("openid.identity") or ""
+        )
         steam_id = extract_steam_id_from_claimed_id(claimed_id)
         if not steam_id:
             raise ValueError("Could not extract SteamID from OpenID claimed_id")
 
-        check_params = {key: value for key, value in params.items() if key.startswith("openid.")}
+        check_params = {
+            key: value for key, value in params.items() if key.startswith("openid.")
+        }
         check_params["openid.mode"] = "check_authentication"
 
         owns_client = self._client is None
@@ -78,7 +84,9 @@ class SteamOpenIdClient:
             if owns_client:
                 await client.aclose()
 
-        valid = any(line.strip().lower() == "is_valid:true" for line in body.splitlines())
+        valid = any(
+            line.strip().lower() == "is_valid:true" for line in body.splitlines()
+        )
         if not valid:
             raise ValueError("Steam OpenID assertion failed validation")
 

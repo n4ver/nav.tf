@@ -56,8 +56,10 @@ class AuthService:
     async def upsert_steam_user(self, steam_id: str) -> User:
         sid64 = to_steam_id64(steam_id) or steam_id
         existing = (
-            await self.session.execute(select(User).where(User.steam_id == sid64))
-        ).scalars().first()
+            (await self.session.execute(select(User).where(User.steam_id == sid64)))
+            .scalars()
+            .first()
+        )
 
         display_name = sid64
         avatar_url: str | None = None
@@ -65,7 +67,11 @@ class AuthService:
         summary = summaries.get(sid64) or {}
         if summary:
             display_name = str(summary.get("personaname") or display_name)
-            avatar_url = summary.get("avatarfull") or summary.get("avatarmedium") or summary.get("avatar")
+            avatar_url = (
+                summary.get("avatarfull")
+                or summary.get("avatarmedium")
+                or summary.get("avatar")
+            )
 
         now = utcnow()
         bootstrap_admins = _bootstrap_admin_ids()
@@ -142,5 +148,7 @@ class AuthService:
             "steam_id": user.steam_id,
             "display_name": user.display_name,
             "avatar_url": user.avatar_url,
-            "role": user.role.value if isinstance(user.role, UserRole) else str(user.role),
+            "role": user.role.value
+            if isinstance(user.role, UserRole)
+            else str(user.role),
         }

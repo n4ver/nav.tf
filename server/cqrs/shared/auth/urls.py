@@ -8,11 +8,14 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from starlette.requests import Request
 
+# Browser-facing path (Vite + Nginx rewrite this to /api/v1/auth on the command service).
+PUBLIC_STEAM_CALLBACK_PATH = "/api/auth/steam/callback"
+
 
 def _force_http_for_local_dev(url: str) -> str:
     """Browsers often upgrade localhost to HTTPS; Steam callback must stay on HTTP in dev."""
     lowered = url.lower()
-    if lowered.startswith("https://localhost") or lowered.startswith("https://127.0.0.1"):
+    if lowered.startswith(("https://localhost", "https://127.0.0.1")):
         return "http://" + url.split("://", 1)[1]
     return url
 
@@ -22,7 +25,11 @@ def resolve_public_base_url(request: Request) -> str | None:
     forwarded_host = (request.headers.get("x-forwarded-host") or "").strip()
     if forwarded_host:
         host = forwarded_host.split(",", 1)[0].strip()
-        proto = (request.headers.get("x-forwarded-proto") or "http").split(",", 1)[0].strip()
+        proto = (
+            (request.headers.get("x-forwarded-proto") or "http")
+            .split(",", 1)[0]
+            .strip()
+        )
         return _force_http_for_local_dev(f"{proto}://{host}".rstrip("/"))
 
     host = (request.headers.get("host") or "").strip()
@@ -59,8 +66,10 @@ def resolve_steam_openid_urls(request: Request) -> tuple[str, str]:
     derived = resolve_public_base_url(request)
     if derived:
         derived = _force_http_for_local_dev(derived)
-        return derived, f"{derived}/api/v1/auth/steam/callback"
+        return derived, f"{derived}{PUBLIC_STEAM_CALLBACK_PATH}"
 
-    realm = _force_http_for_local_dev((realm_env or "http://localhost:5173").rstrip("/"))
-    return_to = return_env or f"{realm}/api/v1/auth/steam/callback"
+    realm = _force_http_for_local_dev(
+        (realm_env or "http://localhost:5173").rstrip("/")
+    )
+    return_to = return_env or f"{realm}{PUBLIC_STEAM_CALLBACK_PATH}"
     return realm, _force_http_for_local_dev(return_to)

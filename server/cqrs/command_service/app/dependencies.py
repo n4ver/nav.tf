@@ -11,7 +11,12 @@ from jwt.exceptions import InvalidTokenError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
-from ...shared.auth import UserRole, decode_access_token, is_seed_service_token, seed_actor_steam_id
+from ...shared.auth import (
+    UserRole,
+    decode_access_token,
+    is_seed_service_token,
+    seed_actor_steam_id,
+)
 from ...shared.steam import canonical_steam_id
 from .db import get_write_session
 from .models import User
@@ -59,9 +64,13 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
 
-    steam_id = canonical_steam_id(str(claims.get("steam_id") or claims.get("sub") or "").strip())
+    steam_id = canonical_steam_id(
+        str(claims.get("steam_id") or claims.get("sub") or "").strip()
+    )
     if not steam_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing steam_id")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing steam_id"
+        )
 
     role_raw = str(claims.get("role") or UserRole.PLAYER.value).upper()
     try:
@@ -71,10 +80,16 @@ async def get_current_user(
 
     # Prefer live role from write DB so demotions take effect without waiting for token expiry.
     db_user = (
-        await session.execute(select(User).where(User.steam_id == steam_id))
-    ).scalars().first()
+        (await session.execute(select(User).where(User.steam_id == steam_id)))
+        .scalars()
+        .first()
+    )
     if db_user is not None:
-        role = db_user.role if isinstance(db_user.role, UserRole) else UserRole(str(db_user.role))
+        role = (
+            db_user.role
+            if isinstance(db_user.role, UserRole)
+            else UserRole(str(db_user.role))
+        )
         return AuthenticatedUser(
             steam_id=db_user.steam_id,
             role=role,
@@ -102,7 +117,7 @@ async def get_current_admin_user(
 
 __all__ = [
     "AuthenticatedUser",
-    "get_write_session",
-    "get_current_user",
     "get_current_admin_user",
+    "get_current_user",
+    "get_write_session",
 ]
