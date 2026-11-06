@@ -204,17 +204,23 @@ run iam service-accounts add-iam-policy-binding "$DEPLOY_SA" \
 
 if [[ -n "$BILLING_ACCOUNT" ]]; then
   step "Billing budget (\$${BUDGET_USD}, gross of trial credits)"
-  if gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" \
+  # The Budgets API needs a quota project when called with user credentials
+  # (--billing-project); without it the call fails with a permission error.
+  if gcloud billing budgets list --billing-project="$PROJECT_ID" \
+    --billing-account="$BILLING_ACCOUNT" \
     --format='value(displayName)' 2>/dev/null | grep -qx "navtf-budget"; then
     echo "  navtf-budget exists (kept)"
   elif [[ "$DRY_RUN" == "1" ]]; then
     echo "  [dry-run] create budget navtf-budget for ${BUDGET_USD} USD"
-  else
-    # Exclude credits so alerts reflect real usage while the trial credit pays for it.
-    gcloud billing budgets create --billing-account="$BILLING_ACCOUNT" \
-      --display-name=navtf-budget --budget-amount="${BUDGET_USD}USD" \
-      --filter-projects="projects/${PROJECT_ID}" --credit-types-treatment=exclude-all-credits \
-      --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0
+  # Exclude credits so alerts reflect real usage while the trial credit pays for it.
+  elif ! gcloud billing budgets create --billing-project="$PROJECT_ID" \
+    --billing-account="$BILLING_ACCOUNT" \
+    --display-name=navtf-budget --budget-amount="${BUDGET_USD}USD" \
+    --filter-projects="projects/${PROJECT_ID}" --credit-types-treatment=exclude-all-credits \
+    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0; then
+    # Optional step: don't let it hide the next-steps summary below.
+    echo "  WARNING: budget not created (see error above). Everything else is set up."
+    echo "  Create one later in the console: Billing -> Budgets & alerts."
   fi
 fi
 
