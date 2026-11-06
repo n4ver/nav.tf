@@ -1,0 +1,11 @@
+# Testing Conventions
+## Framework
+- Use Jest for javascript tests, Vitest Testing Library for frontend
+- Use pytest with fixtures for backend
+- Mock external services, never make real API calls in tests
+## Structure
+- One test file per source file: `*.test.js` (api-consumer, Jest), colocated `*.spec.js` (web, Vitest), `test_*.py` (server, pytest)
+- Group tests with describe blocks by method or behavior
+- Use arrange-act-assert pattern
+## Examples to follow
+- server/cqrs/tests/test_auth_rbac.py (good example of tests)
