@@ -1,4 +1,4 @@
-# TF2 Analytics
+# nav.tf
 
 A full-stack web application for ingesting, analyzing, and visualizing Team Fortress 2 competitive match logs.
 
@@ -6,10 +6,10 @@ Collect log data from sources like [logs.tf](https://logs.tf) and [matcha.tf](ht
 
 ## Architecture
 
-TF2 Analytics uses a **CQRS microservices** architecture:
+nav.tf uses a **CQRS microservices** architecture:
 
 ```text
-logproject/
+nav.tf/
   web/                    Vue dashboard (:5173)
   server/
     cqrs/
