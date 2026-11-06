@@ -1,0 +1,207 @@
+services:
+  rabbitmq:
+    container_name: rabbitmq
+    image: "rabbitmq:3.11.8-management-alpine"
+    ports:
+      - "15672:15672"
+      - "5672:5672"
+    hostname: rabbitmq
+    networks:
+      - app_network
+    restart: always
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: cqrs_command
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./postgres/init-cqrs-databases.sql:/docker-entrypoint-initdb.d/01-init-cqrs.sql:ro
+      - ../../cqrs/tests/postgres/init-test-databases.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
+    networks:
+      - app_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d cqrs_command"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  db-init:
+    image: postgres:15
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: cqrs_command
+      PGPASSWORD: password
+    volumes:
+      - ./postgres/ensure-cqrs-databases.sh:/ensure-cqrs-databases.sh:ro
+      - ../../cqrs/tests/postgres/ensure-test-databases.sh:/ensure-test-databases.sh:ro
+    entrypoint: ["bash", "-c", "bash /ensure-cqrs-databases.sh && bash /ensure-test-databases.sh"]
+    networks:
+      - app_network
+    restart: "no"
+
+  seed:
+    build:
+      context: ../..
+      dockerfile: dev-setup/docker/Dockerfile
+    container_name: seed
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_started
+      command-service:
+        condition: service_started
+      query-service:
+        condition: service_started
+    environment:
+      COMMAND_SERVICE_URL: http://command-service:8001
+      QUERY_SERVICE_URL: http://query-service:8002
+      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_command
+      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_query
+      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-jwt-secret-change-me}
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-dev-seed-service-token}
+    working_dir: /app
+    command: ["python", "dev-setup/seed/seed_cqrs.py", "--http", "--no-fallback"]
+    volumes:
+      - ../../data:/app/data
+      - ../../dev-setup/seed:/app/dev-setup/seed:ro
+    networks:
+      - app_network
+    profiles:
+      - seed
+
+  command-service:
+    build:
+      context: ../..
+      dockerfile: dev-setup/docker/Dockerfile
+    container_name: command
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_started
+    ports:
+      - "8001:8001"
+    environment:
+      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_command
+      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET}
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8095}
+      STEAM_OPENID_REALM: ${STEAM_OPENID_REALM:-http://localhost:8095}
+      STEAM_OPENID_RETURN_TO: ${STEAM_OPENID_RETURN_TO:-http://localhost:8095/api/auth/steam/callback}
+      STEAM_API_KEY: ${STEAM_API_KEY:-}
+      BOOTSTRAP_ADMIN_STEAM_IDS: ${BOOTSTRAP_ADMIN_STEAM_IDS:-}
+    volumes:
+      - ../../data:/app/data
+      - ../../cqrs:/app/cqrs
+    command: ["uvicorn", "cqrs.command_service.app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
+    restart: unless-stopped
+    networks:
+      - app_network
+
+  query-service:
+    build:
+      context: ../..
+      dockerfile: dev-setup/docker/Dockerfile
+    container_name: query
+    depends_on:
+      db:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_started
+    ports:
+      - "8002:8002"
+    environment:
+      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_query
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+    volumes:
+      - ../../data:/app/data
+      - ../../cqrs:/app/cqrs
+    command: ["uvicorn", "cqrs.query_service.app.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
+    restart: unless-stopped
+    networks:
+      - app_network
+
+  web:
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ../../../web:/app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_COMMAND_BASE_URL: /api/command
+      VITE_QUERY_BASE_URL: /api/query
+      VITE_AUTH_BASE_URL: /api/auth
+      VITE_GATEWAY_PROXY_TARGET: http://gateway:80
+    depends_on:
+      - command-service
+      - query-service
+      - gateway
+    networks:
+      - app_network
+
+  gateway:
+    image: nginx:1.27-alpine
+    container_name: gateway
+    ports:
+      - "8095:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - command-service
+      - query-service
+    networks:
+      - app_network
+    restart: unless-stopped
+
+  api-consumer:
+    build:
+      context: ../../../api-consumer
+      dockerfile: Dockerfile
+    container_name: api-consumer
+    depends_on:
+      rabbitmq:
+        condition: service_started
+    ports:
+      - "8010:8010"
+    environment:
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      CQRS_EXCHANGE_NAME: tf2-events
+      CQRS_DLX_NAME: tf2-events.dlx
+      MATCHA_LEAGUE_ID: ${MATCHA_LEAGUE_ID:-1}
+      MATCHA_DIVISION_ID: ${MATCHA_DIVISION_ID:-1}
+      MATCHA_TOURNAMENT_NAME: ${MATCHA_TOURNAMENT_NAME:-Matcha.tf Minicup Invite}
+      MATCHA_TOURNAMENT_SLUG: ${MATCHA_TOURNAMENT_SLUG:-matcha-tf-minicup-invite}
+      POLL_CRON: ${API_CONSUMER_POLL_CRON:-*/5 * * * *}
+      POLL_ENABLED: ${API_CONSUMER_POLL_ENABLED:-true}
+      WEBHOOK_ENABLED: "true"
+      LOG_LEVEL: info
+      ACTOR_ID: api-consumer
+      WEBHOOK_API_KEY: ${WEBHOOK_API_KEY}
+    restart: unless-stopped
+    networks:
+      - app_network
+    profiles:
+      - consumer
+
+networks:
+  app_network:
+    driver: bridge

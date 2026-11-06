@@ -2,11 +2,11 @@
 
 Default path (Docker / local microservices):
   docker compose up -d db rabbitmq command-service query-service
-  python seed_cqrs.py --http
+  python dev-setup/seed/seed_cqrs.py --http
   # or: docker compose --profile seed run --rm seed
 
 Direct path (no HTTP/RabbitMQ; writes Postgres through in-process handlers):
-  python seed_cqrs.py --direct
+  python dev-setup/seed/seed_cqrs.py --direct
 """
 
 from __future__ import annotations
@@ -22,11 +22,15 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-SERVER_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SERVER_DIR))
+SERVER_ROOT = Path(__file__).resolve().parents[2]
+DEV_SETUP_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SERVER_ROOT))
+sys.path.insert(0, str(SERVER_ROOT / "dev-setup"))
 
-CACHE_FILE = SERVER_DIR / "data" / "seed_logs_cache.json"
-COMMAND_SERVICE_URL = os.getenv("COMMAND_SERVICE_URL", "http://127.0.0.1:8001").rstrip("/")
+CACHE_FILE = SERVER_ROOT / "data" / "seed_logs_cache.json"
+COMMAND_SERVICE_URL = os.getenv("COMMAND_SERVICE_URL", "http://127.0.0.1:8001").rstrip(
+    "/"
+)
 QUERY_SERVICE_URL = os.getenv("QUERY_SERVICE_URL", "http://127.0.0.1:8002").rstrip("/")
 
 HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
@@ -59,7 +63,7 @@ def _load_logs(cache_path: Path, limit: int | None) -> list[dict]:
     if not cache_path.exists():
         raise SystemExit(
             f"Cache file not found: {cache_path}\n"
-            "Build it first with: python build_seed_cache.py"
+            "Build it first with: python dev-setup/seed/build_seed_cache.py"
         )
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     logs = payload.get("logs", [])
@@ -112,10 +116,14 @@ async def _truncate_postgres_database(url: str, label: str) -> int:
             ).all()
             tables = [name for (name,) in rows]
             if not tables:
-                print(f"  {label}: no tables yet (services will create schema on startup)")
+                print(
+                    f"  {label}: no tables yet (services will create schema on startup)"
+                )
                 return 0
             quoted = ", ".join(f'"{name}"' for name in tables)
-            await connection.execute(text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE"))
+            await connection.execute(
+                text(f"TRUNCATE TABLE {quoted} RESTART IDENTITY CASCADE")
+            )
             print(f"  {label}: truncated {len(tables)} table(s)")
             return len(tables)
     finally:
@@ -143,7 +151,11 @@ async def _request_with_retries(
     for attempt in range(1, MAX_HTTP_RETRIES + 1):
         try:
             return await client.request(method, url, **kwargs)
-        except (httpx.RemoteProtocolError, httpx.ConnectError, httpx.ReadTimeout) as exc:
+        except (
+            httpx.RemoteProtocolError,
+            httpx.ConnectError,
+            httpx.ReadTimeout,
+        ) as exc:
             last_error = exc
             if attempt == MAX_HTTP_RETRIES:
                 break
@@ -197,7 +209,7 @@ async def _verify_command_service(client: httpx.AsyncClient, url: str) -> None:
                     raise CommandServiceUnavailable(
                         f"Command service at {url} is running old code without "
                         "/api/v1/commands/logs/ingest-cached. Rebuild/restart it, or run:\n"
-                        "  python seed_cqrs.py --direct"
+                        "  python dev-setup/seed/seed_cqrs.py --direct"
                     )
             print(f"Command service ready at {url}")
             return
@@ -239,13 +251,16 @@ async def _count_query_matches_http(client: httpx.AsyncClient) -> int:
 
 
 async def _count_query_matches_direct() -> int:
+    from sqlmodel import func, select
+
     from cqrs.query_service.app.db import SessionLocal
     from cqrs.query_service.app.models import MatchSummaryProjection
-    from sqlmodel import func, select
 
     async with SessionLocal() as session:
         return (
-            await session.execute(select(func.count()).select_from(MatchSummaryProjection))
+            await session.execute(
+                select(func.count()).select_from(MatchSummaryProjection)
+            )
         ).scalar_one()
 
 
@@ -344,7 +359,9 @@ async def seed_http(
                 accepted += 1
 
             if index % 25 == 0 or index == len(logs):
-                print(f"  progress {index}/{len(logs)} (accepted={accepted}, skipped={skipped})")
+                print(
+                    f"  progress {index}/{len(logs)} (accepted={accepted}, skipped={skipped})"
+                )
 
         target = before + accepted
         after = await _wait_for_query_projections(client, target=target)
@@ -358,9 +375,9 @@ async def seed_http(
             print(
                 "Some commands did not project to the query Postgres DB. "
                 "Ensure RabbitMQ is healthy, then retry:\n"
-                "  python seed_cqrs.py --http\n"
+                "  python dev-setup/seed/seed_cqrs.py --http\n"
                 "or seed in-process:\n"
-                "  python seed_cqrs.py --direct --force"
+                "  python dev-setup/seed/seed_cqrs.py --direct --force"
             )
             raise SystemExit(1)
 
@@ -381,30 +398,35 @@ async def seed_direct(
             raise SystemExit(
                 "Query service is running on port 8002. Prefer HTTP seeding so RabbitMQ "
                 "projections stay consistent:\n"
-                "  python seed_cqrs.py --http\n"
+                "  python dev-setup/seed/seed_cqrs.py --http\n"
                 "Or pass --force to write Postgres directly while services are up."
             )
 
     os.environ.setdefault("CQRS_BROKER_MODE", "memory")
     os.environ.setdefault("SEED_CACHE_PATH", str(cache_path.resolve()))
 
-    from cqrs.command_service.app.db import SessionLocal as CommandSessionLocal, init_write_db
+    from cqrs.command_service.app.db import (
+        SessionLocal as CommandSessionLocal,
+    )
+    from cqrs.command_service.app.db import (
+        init_write_db,
+    )
     from cqrs.command_service.app.services import CommandService
-    from cqrs.query_service.app.consumer import handle_integration_event
     from cqrs.query_service.app.db import init_read_db
+    from cqrs.query_service.app.idempotency import handle_integration_event_idempotent
     from cqrs.shared.broker import BROKER
     from cqrs.shared.schemas import CachedLogIngest
     from cqrs.shared.seed_cache import clear_seed_cache_index
 
     clear_seed_cache_index()
     logs = _load_logs(cache_path, limit)
-    print(f"Direct seed using Postgres:")
+    print("Direct seed using Postgres:")
     print(f"  command -> {_describe_backend(_command_database_url())}")
     print(f"  query   -> {_describe_backend(_query_database_url())}")
 
     await init_write_db()
     await init_read_db()
-    BROKER.subscribe(handle_integration_event)
+    BROKER.subscribe(handle_integration_event_idempotent)
 
     before = await _count_query_matches_direct()
     print(f"Direct CQRS seed using in-memory broker ({len(logs)} logs)")
@@ -428,10 +450,14 @@ async def seed_direct(
         else:
             accepted += 1
         if index % 25 == 0 or index == len(logs):
-            print(f"  progress {index}/{len(logs)} (accepted={accepted}, skipped={skipped})")
+            print(
+                f"  progress {index}/{len(logs)} (accepted={accepted}, skipped={skipped})"
+            )
 
     after = await _count_query_matches_direct()
-    print(f"CQRS direct seed complete: accepted={accepted}, skipped={skipped}, total={len(logs)}")
+    print(
+        f"CQRS direct seed complete: accepted={accepted}, skipped={skipped}, total={len(logs)}"
+    )
     print(f"Query matches after seed: {after}")
 
 
@@ -471,7 +497,9 @@ def main() -> None:
 
     if args.direct:
         asyncio.run(
-            seed_direct(args.cache, limit=args.limit, reset=args.reset, force=args.force)
+            seed_direct(
+                args.cache, limit=args.limit, reset=args.reset, force=args.force
+            )
         )
     else:
         asyncio.run(

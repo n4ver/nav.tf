@@ -4,9 +4,10 @@ __pycache__/
 *.pyd
 .pytest_cache/
 .venv/
+htmlcov/
+dev-setup/python/htmlcov/
+dev-setup/python/coverage.xml
 .git/
-.gitignore
-.vscode/
 .env
 *.env
 .env.*

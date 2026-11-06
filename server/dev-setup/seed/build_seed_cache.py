@@ -1,4 +1,4 @@
-"""Build a cached JSON seed file from server/invite.txt log IDs.
+"""Build a cached JSON seed file from dev-setup/seed/invite.txt log IDs.
 
 Fetches each log payload from logs.tf and writes server/data/seed_logs_cache.json
 for offline database seeding without repeated API calls.
@@ -6,13 +6,13 @@ for offline database seeding without repeated API calls.
 After building the cache, seed the CQRS Postgres databases:
 
     docker compose up -d db rabbitmq command-service query-service
-    python seed_cqrs.py --http
+    python dev-setup/seed/seed_cqrs.py --http
     # or: docker compose --profile seed run --rm seed
 
 Usage:
     cd server
-    python build_seed_cache.py
-    python build_seed_cache.py --skip-fetch   # rebuild manifest only from existing cache
+    python dev-setup/seed/build_seed_cache.py
+    python dev-setup/seed/build_seed_cache.py --skip-fetch
 """
 
 from __future__ import annotations
@@ -20,15 +20,16 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import httpx
 
-SERVER_DIR = Path(__file__).resolve().parent
-INVITE_FILE = SERVER_DIR / "invite.txt"
-CACHE_FILE = SERVER_DIR / "data" / "seed_logs_cache.json"
+DEV_SETUP_DIR = Path(__file__).resolve().parent
+SERVER_ROOT = DEV_SETUP_DIR.parents[1]
+INVITE_FILE = DEV_SETUP_DIR / "invite.txt"
+CACHE_FILE = SERVER_ROOT / "data" / "seed_logs_cache.json"
 LOGS_TF_API = "https://logs.tf/json"
 CACHE_VERSION = 1
 FETCH_CONCURRENCY = 2
@@ -100,7 +101,9 @@ async def _fetch_one(
                 await asyncio.sleep(REQUEST_DELAY_SECONDS)
                 response = await client.get(f"{LOGS_TF_API}/{log_id}")
                 if response.status_code == 429:
-                    retry_after = float(response.headers.get("Retry-After", min(2 ** attempt, 30)))
+                    retry_after = float(
+                        response.headers.get("Retry-After", min(2**attempt, 30))
+                    )
                     await asyncio.sleep(retry_after)
                     continue
                 if response.status_code != 200:
@@ -122,7 +125,7 @@ async def _fetch_one(
                         "fetch_status": "failed",
                         "error": str(exc),
                     }
-                await asyncio.sleep(min(2 ** attempt, 30))
+                await asyncio.sleep(min(2**attempt, 30))
         return {
             **entry,
             "fetch_status": "failed",
@@ -140,7 +143,9 @@ async def fetch_logs(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return results
 
 
-def build_cache(entries: list[dict[str, Any]], fetched: list[dict[str, Any]]) -> dict[str, Any]:
+def build_cache(
+    entries: list[dict[str, Any]], fetched: list[dict[str, Any]]
+) -> dict[str, Any]:
     ok_logs = [item for item in fetched if item.get("fetch_status") == "ok"]
     failures = [
         {
@@ -158,12 +163,14 @@ def build_cache(entries: list[dict[str, Any]], fetched: list[dict[str, Any]]) ->
     tournaments: dict[str, int] = {}
     for item in ok_logs:
         sections[item["section"]] = sections.get(item["section"], 0) + 1
-        tournaments[str(item["tournament_id"])] = tournaments.get(str(item["tournament_id"]), 0) + 1
+        tournaments[str(item["tournament_id"])] = (
+            tournaments.get(str(item["tournament_id"]), 0) + 1
+        )
 
     return {
         "version": CACHE_VERSION,
-        "source_file": str(INVITE_FILE.relative_to(SERVER_DIR)),
-        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "source_file": str(INVITE_FILE.relative_to(SERVER_ROOT)),
+        "generated_at": datetime.now(UTC).isoformat(),
         "api_base": LOGS_TF_API,
         "summary": {
             "requested": len(entries),
@@ -189,7 +196,11 @@ def load_existing_payloads(cache_path: Path) -> dict[int, dict[str, Any]]:
     if not cache_path.exists():
         return {}
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
-    return {item["log_id"]: item["data"] for item in payload.get("logs", []) if "data" in item}
+    return {
+        item["log_id"]: item["data"]
+        for item in payload.get("logs", [])
+        if "data" in item
+    }
 
 
 async def main(skip_fetch: bool) -> None:
@@ -207,26 +218,40 @@ async def main(skip_fetch: bool) -> None:
         for entry in entries:
             data = existing.get(entry["log_id"])
             if data is None:
-                fetched.append({**entry, "fetch_status": "failed", "error": "missing from existing cache"})
+                fetched.append(
+                    {
+                        **entry,
+                        "fetch_status": "failed",
+                        "error": "missing from existing cache",
+                    }
+                )
             else:
                 fetched.append({**entry, "fetch_status": "ok", "data": data})
     else:
         existing = load_existing_payloads(CACHE_FILE)
         pending = [entry for entry in entries if entry["log_id"] not in existing]
-        print(f"Fetching {len(pending)} logs from logs.tf ({len(existing)} already cached) ...")
+        print(
+            f"Fetching {len(pending)} logs from logs.tf ({len(existing)} already cached) ..."
+        )
         fetched_pending = await fetch_logs(pending) if pending else []
         fetched_by_id = {item["log_id"]: item for item in fetched_pending}
         fetched = []
         for entry in entries:
             log_id = entry["log_id"]
             if log_id in existing:
-                fetched.append({**entry, "fetch_status": "ok", "data": existing[log_id]})
+                fetched.append(
+                    {**entry, "fetch_status": "ok", "data": existing[log_id]}
+                )
                 continue
             item = fetched_by_id.get(log_id)
             if item is None:
-                fetched.append({**entry, "fetch_status": "failed", "error": "not fetched"})
+                fetched.append(
+                    {**entry, "fetch_status": "failed", "error": "not fetched"}
+                )
             elif item.get("fetch_status") != "ok" and log_id in existing:
-                fetched.append({**entry, "fetch_status": "ok", "data": existing[log_id]})
+                fetched.append(
+                    {**entry, "fetch_status": "ok", "data": existing[log_id]}
+                )
             else:
                 fetched.append(item)
 
@@ -247,7 +272,9 @@ async def main(skip_fetch: bool) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Build seed_logs_cache.json from invite.txt")
+    parser = argparse.ArgumentParser(
+        description="Build seed_logs_cache.json from invite.txt"
+    )
     parser.add_argument(
         "--skip-fetch",
         action="store_true",
