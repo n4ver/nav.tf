@@ -146,3 +146,30 @@ def raw_client():
 
     dispose_engine(command_engine)
     dispose_engine(query_engine)
+
+
+@pytest.fixture
+def clean_dbs():
+    """Empty, migrated command and query databases without starting either app.
+
+    Use this instead of ``client`` for tests that drive the outbox relay or the
+    rating rebuild directly: the apps' background workers (outbox relay, rating
+    rebuild) would otherwise race the test.
+    """
+    from cqrs.command_service.app.db import engine as command_engine
+    from cqrs.command_service.app.db import init_write_db
+    from cqrs.query_service.app.db import engine as query_engine
+    from cqrs.query_service.app.db import init_read_db
+
+    async def _init() -> None:
+        await init_write_db()
+        await init_read_db()
+
+    asyncio.run(_init())
+    sync_truncate_database("cqrs_command_test")
+    sync_truncate_database("cqrs_query_test")
+    dispose_engine(command_engine)
+    dispose_engine(query_engine)
+    yield
+    dispose_engine(command_engine)
+    dispose_engine(query_engine)

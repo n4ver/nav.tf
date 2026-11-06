@@ -29,34 +29,35 @@ async def handle_integration_event_idempotent(
     event_type: str,
     envelope: dict[str, Any],
 ) -> None:
-    """Apply an integration event at most once per event_id."""
+    """Apply an integration event at most once per event_id.
+
+    The ProcessedEvent row is claimed first, inside a savepoint, so that only a
+    conflict on that primary key is treated as a duplicate. Any other error
+    (including IntegrityErrors raised by the projection itself) rolls back the
+    whole transaction and propagates, so the broker can retry or park it.
+    """
     event_id = _extract_event_id(envelope)
 
     async with SessionLocal() as session:
         if event_id is not None:
-            existing = await session.get(ProcessedEvent, event_id)
-            if existing is not None:
+            try:
+                async with session.begin_nested():
+                    session.add(
+                        ProcessedEvent(event_id=event_id, event_type=event_type)
+                    )
+                    await session.flush()
+            except IntegrityError:
+                # Already applied, or a concurrent worker committed it first.
+                await session.rollback()
                 logger.info(
-                    "Skipping duplicate event_id=%s type=%s",
-                    event_id,
-                    event_type,
+                    "Skipping duplicate event_id=%s type=%s", event_id, event_type
                 )
                 return
 
         service = ProjectionService(session)
         try:
             await service.handle_event(event_type, envelope)
-            if event_id is not None:
-                session.add(ProcessedEvent(event_id=event_id, event_type=event_type))
             await session.commit()
-        except IntegrityError:
-            # Concurrent worker claimed the same event_id.
-            await session.rollback()
-            logger.info(
-                "Concurrent duplicate event_id=%s type=%s",
-                event_id,
-                event_type,
-            )
         except Exception:
             await session.rollback()
             logger.exception("Failed projecting event_type=%s", event_type)

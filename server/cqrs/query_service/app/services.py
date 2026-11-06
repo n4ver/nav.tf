@@ -57,6 +57,10 @@ from .rating import (
 )
 
 
+class ProjectionDependencyMissing(RuntimeError):
+    """An event refers to read-model state that has not been projected yet."""
+
+
 def _as_uuid(value: Any) -> UUID:
     return value if isinstance(value, UUID) else UUID(str(value))
 
@@ -708,7 +712,13 @@ class ProjectionService:
             return
         match = await self.session.get(MatchSummaryProjection, match_id)
         if match is None:
-            return
+            # The command side only assigns matches it has ingested, so a missing
+            # projection means its MatchParsed has not been applied (or was parked).
+            # Fail so the broker retries and then parks this event, rather than
+            # acking it and silently losing the assignment.
+            raise ProjectionDependencyMissing(
+                f"MatchTournamentAssigned for unknown match_id={match_id}"
+            )
         old_tournament_id = match.tournament_id
         payload_previous = payload.get("previous_tournament_id")
         if payload_previous and not old_tournament_id:
