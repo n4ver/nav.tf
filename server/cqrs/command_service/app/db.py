@@ -88,6 +88,13 @@ def _ensure_write_schema(connection) -> None:
             )
 
     if inspector.has_table("outbox_events"):
+        outbox_columns = {
+            column["name"] for column in inspector.get_columns("outbox_events")
+        }
+        if "next_attempt_at" not in outbox_columns:
+            connection.execute(
+                text("ALTER TABLE outbox_events ADD COLUMN next_attempt_at TIMESTAMP")
+            )
         connection.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_outbox_events_status_created_at "

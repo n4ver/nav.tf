@@ -48,6 +48,8 @@ class OutboxEvent(CommandSQLModel, table=True):
     created_at: datetime = Field(default_factory=utcnow, index=True)
     published_at: datetime | None = Field(default=None)
     attempts: int = Field(default=0)
+    # Earliest time the relay may retry this row (exponential backoff after failures).
+    next_attempt_at: datetime | None = Field(default=None)
     last_error: str | None = Field(default=None)
 
 

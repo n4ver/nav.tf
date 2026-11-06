@@ -43,7 +43,8 @@ class OutboxWorker:
         logger.info("Outbox relay worker started (interval=%.3fs)", interval)
         while not self._stopping.is_set():
             try:
-                count = await flush_outbox()
+                # Non-blocking: if a post-commit kick is relaying, skip this tick.
+                count = await flush_outbox(wait_for_lock=False)
                 if count:
                     logger.debug("Outbox relay published %s event(s)", count)
             except asyncio.CancelledError:
