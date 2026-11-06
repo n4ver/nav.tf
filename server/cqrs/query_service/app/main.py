@@ -114,6 +114,16 @@ async def get_tournament_leaderboard(
     )
 
 
+@app.get("/api/v1/queries/leaderboard", response_model=list[LeaderboardEntryView])
+async def get_global_leaderboard(
+    class_name: str | None = None,
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_read_session),
+) -> list[LeaderboardEntryView]:
+    service = ProjectionService(session)
+    return await service.get_global_leaderboard(class_name=class_name, limit=limit)
+
+
 @app.get("/api/v1/queries/events", response_model=list[EventSummaryView])
 async def list_events(
     session: AsyncSession = Depends(get_read_session),
