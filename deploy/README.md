@@ -46,7 +46,7 @@ Prerequisites:
 ### 1. Bootstrap the project
 
 ```bash
-git clone https://github.com/n4ver/logdashboard.git && cd logdashboard
+git clone https://github.com/n4ver/nav.tf.git && cd nav.tf
 gcloud auth login            # not needed in Cloud Shell
 PROJECT_ID=my-navtf-project \
 DOMAIN=nav.example.com \
