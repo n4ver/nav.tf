@@ -44,9 +44,11 @@ try g iam service-accounts delete "navtf-vm@${PROJECT_ID}.iam.gserviceaccount.co
 
 if [[ -n "$BILLING_ACCOUNT" ]]; then
   echo "==> Budget"
-  budget="$(gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" \
+  budget="$(gcloud billing budgets list --billing-project="$PROJECT_ID" \
+    --billing-account="$BILLING_ACCOUNT" \
     --filter='displayName=navtf-budget' --format='value(name)' 2>/dev/null || true)"
-  [[ -n "$budget" ]] && try gcloud billing budgets delete "$budget" --quiet
+  [[ -n "$budget" ]] && try gcloud billing budgets delete "$budget" \
+    --billing-project="$PROJECT_ID" --quiet
 fi
 
 echo "==> Remaining snapshots (delete with: gcloud compute snapshots delete NAME --project=${PROJECT_ID})"
