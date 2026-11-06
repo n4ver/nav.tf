@@ -5,6 +5,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING
 
+from ..settings import is_production
+
 if TYPE_CHECKING:
     from starlette.requests import Request
 
@@ -13,7 +15,12 @@ PUBLIC_STEAM_CALLBACK_PATH = "/api/auth/steam/callback"
 
 
 def _force_http_for_local_dev(url: str) -> str:
-    """Browsers often upgrade localhost to HTTPS; Steam callback must stay on HTTP in dev."""
+    """Browsers often upgrade localhost to HTTPS; Steam callback must stay on HTTP in dev.
+
+    Never applied in production, where configured https:// URLs are used as-is.
+    """
+    if is_production():
+        return url
     lowered = url.lower()
     if lowered.startswith(("https://localhost", "https://127.0.0.1")):
         return "http://" + url.split("://", 1)[1]

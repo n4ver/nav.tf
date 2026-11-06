@@ -8,6 +8,7 @@ from typing import Any
 
 import jwt
 
+from ..settings import DEV_JWT_SECRET
 from .roles import UserRole
 
 ALGORITHM = "HS256"
@@ -17,8 +18,9 @@ DEFAULT_EXPIRE_MINUTES = 60 * 24 * 7  # 7 days
 def _secret() -> str:
     secret = os.getenv("JWT_SECRET", "").strip()
     if not secret:
-        # Dev fallback — production must set JWT_SECRET.
-        secret = "dev-insecure-jwt-secret-change-me"
+        # Dev fallback. Production refuses to start without a real secret
+        # (see shared/settings.enforce_production_settings).
+        secret = DEV_JWT_SECRET
     return secret
 
 

@@ -1,0 +1,12 @@
+# Normalise text files to LF in the repository.
+* text=auto
+
+# Files executed or mounted inside Linux containers/VMs must stay LF even in
+# Windows working copies (core.autocrlf would otherwise check them out as CRLF).
+*.sh text eol=lf
+Caddyfile text eol=lf
+*.Dockerfile text eol=lf
+Dockerfile text eol=lf
+*.dockerignore text eol=lf
+deploy/** text eol=lf
+.github/** text eol=lf

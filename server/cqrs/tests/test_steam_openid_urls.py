@@ -32,3 +32,15 @@ def test_resolve_steam_openid_urls_from_forwarded_headers(monkeypatch):
     realm, return_to = resolve_steam_openid_urls(request)
     assert realm == "http://localhost:5173"
     assert return_to == "http://localhost:5173/api/auth/steam/callback"
+
+
+def test_localhost_https_is_kept_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    assert _force_http_for_local_dev("https://localhost") == "https://localhost"
+    monkeypatch.setenv("STEAM_OPENID_REALM", "https://localhost")
+    monkeypatch.setenv(
+        "STEAM_OPENID_RETURN_TO", "https://localhost/api/auth/steam/callback"
+    )
+    realm, return_to = resolve_steam_openid_urls(_FakeRequest({}))
+    assert realm == "https://localhost"
+    assert return_to == "https://localhost/api/auth/steam/callback"

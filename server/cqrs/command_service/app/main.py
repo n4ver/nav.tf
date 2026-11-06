@@ -28,6 +28,7 @@ from ...shared.schemas import (
     UpdatePlayerDisplayNameCommand,
     UpdateTournamentCommand,
 )
+from ...shared.settings import enforce_production_settings, fastapi_docs_kwargs
 from .auth_service import AuthService
 from .db import get_write_session, init_write_db
 from .dependencies import AuthenticatedUser, get_current_admin_user, get_current_user
@@ -39,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    enforce_production_settings("command")
     await init_write_db()
     start_outbox_worker()
     yield
@@ -46,7 +48,12 @@ async def lifespan(_app: FastAPI):
     await close_broker()
 
 
-app = FastAPI(title="CQRS Command Service", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="CQRS Command Service",
+    version="1.0.0",
+    lifespan=lifespan,
+    **fastapi_docs_kwargs(),
+)
 add_cors_middleware(app)
 
 

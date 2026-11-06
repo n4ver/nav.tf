@@ -1,0 +1,9 @@
+# Build context is the repo root; send only the web app and the Caddyfile.
+*
+!web/
+!deploy/Caddyfile
+web/node_modules/
+web/dist/
+web/.env
+web/.env.*
+web/coverage/
