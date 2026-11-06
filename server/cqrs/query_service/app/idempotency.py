@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from .db import SessionLocal
 from .models import ProcessedEvent
+from .rating_rebuild import run_inline_rating_rebuild_if_enabled
 from .services import ProjectionService
 
 logger = logging.getLogger(__name__)
@@ -62,3 +63,5 @@ async def handle_integration_event_idempotent(
             await session.rollback()
             logger.exception("Failed projecting event_type=%s", event_type)
             raise
+
+    await run_inline_rating_rebuild_if_enabled()

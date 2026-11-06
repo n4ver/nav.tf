@@ -23,6 +23,9 @@ from postgres import (
 )
 
 os.environ["CQRS_BROKER_MODE"] = "memory"
+# Run the coalesced rating rebuild synchronously after each event (same code path
+# as the deferred worker, just triggered inline) so tests can assert ratings.
+os.environ.setdefault("RATING_REBUILD_MODE", "inline")
 os.environ["JWT_SECRET"] = os.getenv("JWT_SECRET", "test-jwt-secret")
 os.environ["CQRS_COMMAND_DATABASE_URL"] = os.getenv(
     "CQRS_COMMAND_TEST_DATABASE_URL",

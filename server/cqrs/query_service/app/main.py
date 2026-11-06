@@ -23,6 +23,7 @@ from ...shared.schemas import (
 from .consumer import start_event_consumer
 from .db import SessionLocal, get_read_session, init_read_db
 from .models import MatchSummaryProjection
+from .rating_rebuild import start_rating_rebuild_worker, stop_rating_rebuild_worker
 from .services import ProjectionService
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,9 @@ async def lifespan(_app: FastAPI):
     await init_read_db()
     logger.info("Query service database initialized")
     start_event_consumer()
+    await start_rating_rebuild_worker()
     yield
+    await stop_rating_rebuild_worker()
     await close_broker()
 
 

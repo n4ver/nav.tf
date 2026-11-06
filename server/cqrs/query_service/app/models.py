@@ -238,3 +238,23 @@ class ProcessedEvent(QuerySQLModel, table=True):
     event_id: UUID = Field(primary_key=True)
     event_type: str = Field(index=True)
     processed_at: datetime = Field(default_factory=utcnow)
+
+
+class RatingRebuildState(QuerySQLModel, table=True):
+    """Single-row coordination state for the debounced rating rebuild.
+
+    Each projection that changes rating inputs bumps ``request_seq``. The rebuild
+    worker records the sequence it covered in ``completed_seq``, so work is pending
+    while ``request_seq > completed_seq``.
+    """
+
+    __tablename__ = "rating_rebuild_state"
+
+    id: int = Field(default=1, primary_key=True)
+    request_seq: int = 0
+    completed_seq: int = 0
+    pending_since: datetime | None = Field(default=None)
+    last_requested_at: datetime | None = Field(default=None)
+    last_run_started_at: datetime | None = Field(default=None)
+    last_run_finished_at: datetime | None = Field(default=None)
+    last_error: str | None = Field(default=None)

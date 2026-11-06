@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import or_
+from sqlalchemy import or_, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import col, func, select
 
@@ -181,36 +181,12 @@ class ProjectionService:
         payload = envelope.get("payload", envelope)
         if event_type == "MatchParsed":
             await self._project_match_parsed(payload)
-            match_id = str(payload.get("match_id") or "")
-            tournament = payload.get("tournament") or {}
-            tournament_id = (
-                str(tournament["tournament_id"])
-                if tournament.get("tournament_id")
-                else None
-            )
-            # Rating math executes solely in this query-side handler.
-            await self.rebuild_ratings()
-            await self._mark_ratings_ready(match_id=match_id or None)
-            if tournament_id:
-                await self.refresh_tournament_leaderboard(str(tournament_id))
-            else:
-                await self.refresh_all_tournament_leaderboards()
-            await self.resolve_missing_player_identities()
-            await self._refresh_event_for_tournament(tournament_id)
+            # Ratings, leaderboards, event stats and Steam identities are refreshed
+            # by one coalesced rebuild (see rating_rebuild.py), not per event.
+            await self.request_rating_rebuild()
         elif event_type in {"RatingsRebuildRequested", "RatingsRebuilt"}:
-            # Legacy internal events — keep for in-flight messages, no-op side effects
-            # when MatchParsed already completed the same work.
-            match_id = str(payload.get("match_id") or "")
-            tournament_id = payload.get("tournament_id")
-            if event_type == "RatingsRebuildRequested":
-                await self.rebuild_ratings()
-                await self._mark_ratings_ready(match_id=match_id or None)
-            if tournament_id:
-                await self.refresh_tournament_leaderboard(str(tournament_id))
-            else:
-                await self.refresh_all_tournament_leaderboards()
-            if event_type == "RatingsRebuilt":
-                await self.resolve_missing_player_identities()
+            # Legacy internal events, kept for in-flight messages only.
+            await self.request_rating_rebuild()
         elif event_type == "LogEventCreated":
             # Audit hook — match/player materialization is driven by MatchParsed.
             return
@@ -228,19 +204,58 @@ class ProjectionService:
         elif event_type == "MatchTournamentAssigned":
             await self._project_match_tournament_assigned(payload)
 
-    async def _mark_ratings_ready(self, match_id: str | None = None) -> None:
-        """Flag match summaries as rating-complete after a full rebuild."""
-        if match_id:
-            row = await self.session.get(MatchSummaryProjection, match_id)
-            if row is not None:
-                row.ratings_ready = True
-            # Full rebuild rescores every row — mark all matches ready.
-        rows = (
-            (await self.session.execute(select(MatchSummaryProjection))).scalars().all()
+    async def request_rating_rebuild(self) -> None:
+        """Mark ratings stale; the rebuild worker coalesces pending requests."""
+        now = utcnow()
+        await self.session.execute(
+            text(
+                """
+                INSERT INTO rating_rebuild_state
+                    (id, request_seq, completed_seq, pending_since, last_requested_at)
+                VALUES (1, 1, 0, :now, :now)
+                ON CONFLICT (id) DO UPDATE SET
+                    pending_since = CASE
+                        WHEN rating_rebuild_state.request_seq
+                             <= rating_rebuild_state.completed_seq
+                        THEN EXCLUDED.pending_since
+                        ELSE COALESCE(
+                            rating_rebuild_state.pending_since, EXCLUDED.pending_since
+                        )
+                    END,
+                    request_seq = rating_rebuild_state.request_seq + 1,
+                    last_requested_at = EXCLUDED.last_requested_at
+                """
+            ),
+            {"now": now},
         )
-        for row in rows:
-            row.ratings_ready = True
+
+    async def pending_rating_match_ids(self, *, limit: int | None = None) -> list[str]:
+        stmt = select(MatchSummaryProjection.match_id).where(
+            col(MatchSummaryProjection.ratings_ready).is_(False)
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        return [str(mid) for mid in (await self.session.execute(stmt)).scalars().all()]
+
+    async def mark_ratings_ready(self, match_ids: list[str]) -> None:
+        """Flag the given match summaries as rating-complete after a rebuild."""
+        ids = list(dict.fromkeys(match_ids))
+        for start in range(0, len(ids), 1000):
+            await self.session.execute(
+                update(MatchSummaryProjection)
+                .where(col(MatchSummaryProjection.match_id).in_(ids[start : start + 1000]))
+                .values(ratings_ready=True)
+            )
         await self.session.flush()
+
+    async def refresh_all_event_player_stats(self) -> None:
+        event_ids = (
+            (await self.session.execute(select(EventSummaryProjection.event_id)))
+            .scalars()
+            .all()
+        )
+        for event_id in event_ids:
+            await self._rebuild_event_player_stats(str(event_id))
 
     async def _upsert_player_identity_bootstrap(
         self,
