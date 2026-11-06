@@ -1,0 +1,74 @@
+model: ClassRatingBenchmarkProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: class_rating_benchmark_view
+fields:
+- name: class_id
+  type: integer
+  required: true
+  primary_key: true
+- name: class_name
+  type: string
+  required: true
+  indexed: true
+- name: sample_size
+  type: integer
+  required: true
+  default: 0
+- name: raw_p05
+  type: float
+  required: true
+  default: 0.0
+- name: raw_p95
+  type: float
+  required: true
+  default: 1.0
+- name: avg_rating
+  type: float
+  required: true
+  default: 1.0
+- name: std_rating
+  type: float
+  required: true
+  default: 0.0
+- name: min_rating
+  type: float
+  required: true
+  default: 0.0
+- name: max_rating
+  type: float
+  required: true
+  default: 2.0
+- name: p10_rating
+  type: float
+  required: true
+  default: 0.0
+- name: p25_rating
+  type: float
+  required: true
+  default: 0.0
+- name: p50_rating
+  type: float
+  required: true
+  default: 0.0
+- name: p75_rating
+  type: float
+  required: true
+  default: 0.0
+- name: p90_rating
+  type: float
+  required: true
+  default: 0.0
+- name: metric_means
+  type: json
+  required: true
+  default: {}
+- name: metric_stds
+  type: json
+  required: true
+  default: {}
+- name: updated_at
+  type: datetime
+  required: true

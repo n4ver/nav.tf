@@ -1,0 +1,12 @@
+model: AuthCodeExchangeRequest
+kind: auth
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Exchange a one-time login code for a JWT.
+fields:
+- name: code
+  type: string
+  required: true
+  constraints:
+  - 'min_length: 1'
+  - 'max_length: 256'

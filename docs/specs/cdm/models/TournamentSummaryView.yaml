@@ -1,0 +1,24 @@
+model: TournamentSummaryView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Tournament catalog row.
+fields:
+- name: tournament_id
+  type: uuid
+  required: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+- name: match_count
+  type: integer
+  required: true
+- name: started_at
+  type: datetime
+  required: false
+- name: event_id
+  type: uuid
+  required: false

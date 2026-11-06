@@ -1,0 +1,27 @@
+model: CreateTournamentCommand
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Create a tournament aggregate on the write side.
+fields:
+- name: name
+  type: string
+  required: true
+  constraints:
+  - 'min_length: 1'
+  - 'max_length: 128'
+- name: slug
+  type: string
+  required: true
+  constraints:
+  - 'min_length: 1'
+  - 'max_length: 128'
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false
+- name: event_id
+  type: uuid
+  required: false

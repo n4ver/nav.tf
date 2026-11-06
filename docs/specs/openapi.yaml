@@ -1,0 +1,1499 @@
+openapi: 3.0.3
+info:
+  title: TF2 Analytics CQRS API
+  version: 1.0.0
+  description: |
+    HTTP API for the TF2 match analytics platform.
+
+    **Gateway paths** (documented below) are what the Vue frontend uses via nginx on port 8095.
+    Each operation includes `x-internal-path` for the upstream FastAPI route.
+
+    **Authentication:** Admin commands require `Authorization: Bearer <JWT>`.
+    Obtain a token via Steam OpenID login → code exchange flow.
+
+    **Commands** return HTTP 202 with a `CommandAcceptedResponse` envelope.
+    Read models are eventually consistent — poll query endpoints after ingest.
+
+servers:
+  - url: http://localhost:8095
+    description: Nginx API gateway (Docker / Vite proxy)
+  - url: http://localhost:8001
+    description: Command service (direct)
+  - url: http://localhost:8002
+    description: Query service (direct)
+
+tags:
+  - name: Auth
+    description: Steam OpenID login and JWT exchange
+  - name: Commands
+    description: Write-side admin commands (async, 202 Accepted)
+  - name: Queries
+    description: Read-side projections
+  - name: Health
+    description: Service health checks
+
+paths:
+  /api/auth/steam/login:
+    get:
+      tags: [Auth]
+      summary: Start Steam OpenID login
+      operationId: steamLogin
+      x-internal-path: /api/v1/auth/steam/login
+      responses:
+        "302":
+          description: Redirect to Steam OpenID provider
+
+  /api/auth/steam/callback:
+    get:
+      tags: [Auth]
+      summary: Steam OpenID callback
+      operationId: steamCallback
+      x-internal-path: /api/v1/auth/steam/callback
+      parameters:
+        - name: openid.*
+          in: query
+          required: true
+          schema:
+            type: string
+          description: OpenID response parameters from Steam
+      responses:
+        "302":
+          description: Redirect to frontend /auth/callback with one-time code or error
+
+  /api/auth/exchange:
+    post:
+      tags: [Auth]
+      summary: Exchange login code for JWT
+      operationId: exchangeAuthCode
+      x-internal-path: /api/v1/auth/exchange
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCodeExchangeRequest"
+      responses:
+        "200":
+          description: JWT issued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthTokenResponse"
+        "401":
+          description: Invalid or expired code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/auth/me:
+    get:
+      tags: [Auth]
+      summary: Current authenticated user
+      operationId: authMe
+      x-internal-path: /api/v1/auth/me
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthUserView"
+        "401":
+          description: Missing or invalid token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /api/command/logs/upload:
+    post:
+      tags: [Commands]
+      summary: Upload raw SRCDS log
+      operationId: uploadLog
+      x-internal-path: /api/v1/commands/logs/upload
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RawLogUpload"
+      responses:
+        "202":
+          description: Log accepted or skipped (duplicate)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "400":
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Unauthorized
+        "403":
+          description: Admin role required
+
+  /api/command/logs/ingest-cached:
+    post:
+      tags: [Commands]
+      summary: Ingest log from seed cache
+      operationId: ingestCachedLog
+      x-internal-path: /api/v1/commands/logs/ingest-cached
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CachedLogIngest"
+      responses:
+        "202":
+          description: Log accepted or skipped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Log not found in cache
+        "503":
+          description: Seed cache unavailable
+
+  /api/command/logs/ingest-logstf:
+    post:
+      tags: [Commands]
+      summary: Fetch and ingest log from logs.tf
+      operationId: ingestLogsTf
+      x-internal-path: /api/v1/commands/logs/ingest-logstf
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestLogsTfCommand"
+      responses:
+        "202":
+          description: Log accepted or skipped
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Log not found on logs.tf
+        "502":
+          description: logs.tf upstream error
+
+  /api/command/players/display-name:
+    post:
+      tags: [Commands]
+      summary: Update player display alias
+      operationId: updatePlayerDisplayName
+      x-internal-path: /api/v1/commands/players/display-name
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdatePlayerDisplayNameCommand"
+      responses:
+        "202":
+          description: Alias update accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+
+  /api/command/tournaments:
+    post:
+      tags: [Commands]
+      summary: Create tournament
+      operationId: createTournament
+      x-internal-path: /api/v1/commands/tournaments
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTournamentCommand"
+      responses:
+        "202":
+          description: Tournament created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "409":
+          description: Slug already exists
+
+  /api/command/tournaments/{tournament_id}:
+    patch:
+      tags: [Commands]
+      summary: Update tournament
+      operationId: updateTournament
+      x-internal-path: /api/v1/commands/tournaments/{tournament_id}
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TournamentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateTournamentCommand"
+      responses:
+        "202":
+          description: Tournament updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Tournament not found
+        "409":
+          description: Slug conflict
+
+  /api/command/tournaments/{tournament_id}/event:
+    patch:
+      tags: [Commands]
+      summary: Link or unlink a tournament to an event
+      operationId: linkTournamentToEvent
+      x-internal-path: /api/v1/commands/tournaments/{tournament_id}/event
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/TournamentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LinkTournamentToEventCommand"
+      responses:
+        "202":
+          description: Link accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Tournament or event not found
+
+  /api/command/events:
+    post:
+      tags: [Commands]
+      summary: Create event
+      operationId: createEvent
+      x-internal-path: /api/v1/commands/events
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateEventCommand"
+      responses:
+        "202":
+          description: Event created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "409":
+          description: Slug already exists
+
+  /api/command/events/{event_id}:
+    patch:
+      tags: [Commands]
+      summary: Update event
+      operationId: updateEvent
+      x-internal-path: /api/v1/commands/events/{event_id}
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateEventCommand"
+      responses:
+        "202":
+          description: Event updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Event not found
+        "409":
+          description: Slug conflict
+
+  /api/command/matches/{match_id}/tournament:
+    patch:
+      tags: [Commands]
+      summary: Assign a match to a tournament
+      operationId: assignMatchTournament
+      x-internal-path: /api/v1/commands/matches/{match_id}/tournament
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: match_id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssignMatchTournamentCommand"
+      responses:
+        "202":
+          description: Assignment accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommandAcceptedResponse"
+        "404":
+          description: Tournament not found
+
+  /api/query/matches:
+    get:
+      tags: [Queries]
+      summary: List matches
+      operationId: listMatches
+      x-internal-path: /api/v1/queries/matches
+      parameters:
+        - name: skip
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 100
+        - name: tournament_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+        - name: event_id
+          in: query
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Match summaries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/MatchSummaryView"
+
+  /api/query/matches/{match_id}:
+    get:
+      tags: [Queries]
+      summary: Get match detail
+      operationId: getMatch
+      x-internal-path: /api/v1/queries/matches/{match_id}
+      parameters:
+        - $ref: "#/components/parameters/MatchId"
+      responses:
+        "200":
+          description: Match summary and player stats
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MatchDetailView"
+        "404":
+          description: Match not found
+
+  /api/query/tournaments:
+    get:
+      tags: [Queries]
+      summary: List tournaments
+      operationId: listTournaments
+      x-internal-path: /api/v1/queries/tournaments
+      responses:
+        "200":
+          description: Tournament catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TournamentSummaryView"
+
+  /api/query/tournaments/{tournament_id}/leaderboard:
+    get:
+      tags: [Queries]
+      summary: Tournament leaderboard
+      operationId: getTournamentLeaderboard
+      x-internal-path: /api/v1/queries/tournaments/{tournament_id}/leaderboard
+      parameters:
+        - $ref: "#/components/parameters/TournamentId"
+        - name: class_name
+          in: query
+          schema:
+            type: string
+          description: Filter to a TF2 class; omit for all-classes aggregate
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Leaderboard rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntryView"
+
+  /api/query/events:
+    get:
+      tags: [Queries]
+      summary: List events
+      operationId: listEvents
+      x-internal-path: /api/v1/queries/events
+      responses:
+        "200":
+          description: Event catalog
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/EventSummaryView"
+
+  /api/query/events/{event_id}:
+    get:
+      tags: [Queries]
+      summary: Get event detail
+      operationId: getEvent
+      x-internal-path: /api/v1/queries/events/{event_id}
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+      responses:
+        "200":
+          description: Event summary and child tournaments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EventDetailView"
+        "404":
+          description: Event not found
+
+  /api/query/events/{event_id}/leaderboard:
+    get:
+      tags: [Queries]
+      summary: Event leaderboard
+      operationId: getEventLeaderboard
+      x-internal-path: /api/v1/queries/events/{event_id}/leaderboard
+      parameters:
+        - $ref: "#/components/parameters/EventId"
+        - name: class_name
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Leaderboard rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntryView"
+
+  /api/query/players/{steam_id}/stats:
+    get:
+      tags: [Queries]
+      summary: Player lifetime stats
+      operationId: getPlayerStats
+      x-internal-path: /api/v1/queries/players/{steam_id}/stats
+      parameters:
+        - $ref: "#/components/parameters/SteamId"
+      responses:
+        "200":
+          description: Player profile aggregate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PlayerLifetimeStatsView"
+
+  /api/query/search:
+    get:
+      tags: [Queries]
+      summary: Search players, matches, tournaments
+      operationId: search
+      x-internal-path: /api/v1/queries/search
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            minimum: 1
+            maximum: 50
+      responses:
+        "200":
+          description: Search results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SearchResultView"
+
+  /api/query/benchmarks/class-rating:
+    get:
+      tags: [Queries]
+      summary: Class rating benchmarks
+      operationId: listClassBenchmarks
+      x-internal-path: /api/v1/queries/benchmarks/class-rating
+      responses:
+        "200":
+          description: Per-class rating baselines
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ClassRatingBenchmarkView"
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Query service health (gateway default)
+      operationId: healthQuery
+      description: Gateway proxies /health to the query service. Command service exposes /health on port 8001 directly.
+      responses:
+        "200":
+          description: Health status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryHealthResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    MatchId:
+      name: match_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    TournamentId:
+      name: tournament_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SteamId:
+      name: steam_id
+      in: path
+      required: true
+      schema:
+        type: string
+        description: SteamID2 (STEAM_0:x:y) or SteamID64
+
+  schemas:
+    ErrorResponse:
+      type: object
+      required: [detail]
+      properties:
+        detail:
+          oneOf:
+            - type: string
+            - type: array
+              items:
+                type: object
+
+    CommandAcceptedResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [accepted, skipped]
+        match_id:
+          type: string
+          format: uuid
+        log_id:
+          type: integer
+          nullable: true
+        steam_id:
+          type: string
+        display_name:
+          type: string
+        tournament_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    RawLogUpload:
+      type: object
+      required: [log_data]
+      properties:
+        log_data:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        tournament_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    CachedLogIngest:
+      type: object
+      required: [log_id, tournament_id]
+      properties:
+        log_id:
+          type: integer
+        tournament_id:
+          type: integer
+        section:
+          type: string
+          default: unknown
+        data:
+          type: object
+          additionalProperties: true
+          nullable: true
+        timestamp:
+          type: string
+          format: date-time
+
+    IngestLogsTfCommand:
+      type: object
+      required: [logstf_id]
+      properties:
+        logstf_id:
+          type: integer
+          minimum: 1
+        tournament_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    UpdatePlayerDisplayNameCommand:
+      type: object
+      required: [steam_id, display_name]
+      properties:
+        steam_id:
+          type: string
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 128
+
+    CreateTournamentCommand:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 128
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    UpdateTournamentCommand:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 128
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    CreateEventCommand:
+      type: object
+      required: [name, slug]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 128
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    UpdateEventCommand:
+      type: object
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        slug:
+          type: string
+          minLength: 1
+          maxLength: 128
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    LinkTournamentToEventCommand:
+      type: object
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    AssignMatchTournamentCommand:
+      type: object
+      required: [tournament_id]
+      properties:
+        tournament_id:
+          type: string
+          format: uuid
+
+    AuthUserView:
+      type: object
+      required: [steam_id, display_name, role]
+      properties:
+        steam_id:
+          type: string
+        display_name:
+          type: string
+        avatar_url:
+          type: string
+          nullable: true
+        role:
+          type: string
+          enum: [player, admin]
+
+    AuthCodeExchangeRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          maxLength: 256
+
+    AuthTokenResponse:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    MatchSummaryView:
+      type: object
+      required: [match_id, map_name, duration_seconds, winning_team, date_played]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        tournament_id:
+          type: string
+          format: uuid
+          nullable: true
+        source_log_id:
+          type: integer
+          nullable: true
+        map_name:
+          type: string
+        duration_seconds:
+          type: integer
+        winning_team:
+          type: string
+        blu_score:
+          type: integer
+          default: 0
+        red_score:
+          type: integer
+          default: 0
+        date_played:
+          type: string
+          format: date-time
+        ratings_ready:
+          type: boolean
+          default: false
+
+    MatchDetailView:
+      type: object
+      required: [match_summary, players]
+      properties:
+        match_summary:
+          $ref: "#/components/schemas/MatchSummaryView"
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerStatsView"
+
+    TournamentSummaryView:
+      type: object
+      required: [tournament_id, name, slug, match_count]
+      properties:
+        tournament_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        match_count:
+          type: integer
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        event_id:
+          type: string
+          format: uuid
+          nullable: true
+
+    EventSummaryView:
+      type: object
+      required: [event_id, name, slug]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+        tournament_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+        tournament_count:
+          type: integer
+          default: 0
+        match_count:
+          type: integer
+          default: 0
+
+    EventDetailView:
+      type: object
+      required: [event, tournaments]
+      properties:
+        event:
+          $ref: "#/components/schemas/EventSummaryView"
+        tournaments:
+          type: array
+          items:
+            $ref: "#/components/schemas/TournamentSummaryView"
+
+    ClassStatView:
+      type: object
+      required: [class_name]
+      properties:
+        class_name:
+          type: string
+        class_id:
+          type: integer
+          default: 0
+        playtime_seconds:
+          type: integer
+          default: 0
+        kills:
+          type: integer
+          default: 0
+        deaths:
+          type: integer
+          default: 0
+        assists:
+          type: integer
+          default: 0
+        dpm:
+          type: number
+          format: float
+          default: 0
+        primary_accuracy:
+          type: number
+          format: float
+          default: 0
+        damage_dealt:
+          type: integer
+          default: 0
+        damage_received:
+          type: integer
+          default: 0
+        heals_received:
+          type: integer
+          default: 0
+        healing_done:
+          type: integer
+          default: 0
+        rating:
+          type: number
+          format: float
+          default: 1.0
+
+    PlayerStatsView:
+      type: object
+      required: [steam_id, match_id, team, classes_played, kills, deaths, assists, damage_per_minute, healing_done]
+      properties:
+        steam_id:
+          type: string
+        match_id:
+          type: string
+          format: uuid
+        team:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        classes_played:
+          type: array
+          items:
+            type: string
+        primary_class:
+          type: string
+          default: unknown
+        playtime_seconds:
+          type: integer
+          default: 0
+        kills:
+          type: integer
+        deaths:
+          type: integer
+        assists:
+          type: integer
+        damage_per_minute:
+          type: number
+          format: float
+        healing_done:
+          type: integer
+        damage_received:
+          type: integer
+          default: 0
+        heals_received:
+          type: integer
+          default: 0
+        ubers:
+          type: integer
+          default: 0
+        drops:
+          type: integer
+          default: 0
+        captures:
+          type: integer
+          default: 0
+        headshots:
+          type: integer
+          default: 0
+        backstabs:
+          type: integer
+          default: 0
+        airshots:
+          type: integer
+          default: 0
+        rating:
+          type: number
+          format: float
+          default: 1.0
+        class_stats:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClassStatView"
+
+    PlayerClassAggregateView:
+      type: object
+      required: [class_name, matches_played, total_kills, total_deaths, total_assists, average_damage_per_minute, total_healing_done, average_rating]
+      properties:
+        class_name:
+          type: string
+        matches_played:
+          type: integer
+        total_kills:
+          type: integer
+        total_deaths:
+          type: integer
+        total_assists:
+          type: integer
+        average_damage_per_minute:
+          type: number
+          format: float
+        total_healing_done:
+          type: integer
+        average_rating:
+          type: number
+          format: float
+
+    PlayerRecentMatchView:
+      type: object
+      required: [match_id, map_name, date_played, team, kills, deaths, assists, damage_per_minute]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        map_name:
+          type: string
+        date_played:
+          type: string
+          format: date-time
+        team:
+          type: string
+        classes_played:
+          type: array
+          items:
+            type: string
+        kills:
+          type: integer
+        deaths:
+          type: integer
+        assists:
+          type: integer
+        damage_per_minute:
+          type: number
+          format: float
+        healing_done:
+          type: integer
+          default: 0
+        rating:
+          type: number
+          format: float
+          default: 1.0
+
+    PlayerLifetimeStatsView:
+      type: object
+      required: [steam_id, matches_played, total_kills, total_deaths, total_assists, average_damage_per_minute, total_healing_done]
+      properties:
+        steam_id:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        matches_played:
+          type: integer
+        total_kills:
+          type: integer
+        total_deaths:
+          type: integer
+        total_assists:
+          type: integer
+        average_damage_per_minute:
+          type: number
+          format: float
+        total_healing_done:
+          type: integer
+        average_rating:
+          type: number
+          format: float
+          default: 1.0
+        class_breakdown:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerClassAggregateView"
+        recent_matches:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerRecentMatchView"
+
+    LeaderboardEntryView:
+      type: object
+      required: [steam_id, matches_played, total_kills, total_deaths, total_assists, average_damage_per_minute, total_healing_done, average_rating]
+      properties:
+        steam_id:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        matches_played:
+          type: integer
+        total_kills:
+          type: integer
+        total_deaths:
+          type: integer
+        total_assists:
+          type: integer
+        average_damage_per_minute:
+          type: number
+          format: float
+        total_healing_done:
+          type: integer
+        average_rating:
+          type: number
+          format: float
+        primary_class:
+          type: string
+          default: unknown
+
+    ClassRatingBenchmarkView:
+      type: object
+      required: [class_name, class_id, sample_size, avg_rating, min_rating, max_rating]
+      properties:
+        class_name:
+          type: string
+        class_id:
+          type: integer
+        sample_size:
+          type: integer
+        avg_rating:
+          type: number
+          format: float
+        std_rating:
+          type: number
+          format: float
+          default: 0
+        min_rating:
+          type: number
+          format: float
+        max_rating:
+          type: number
+          format: float
+        p50_rating:
+          type: number
+          format: float
+          default: 1.0
+
+    SearchResultView:
+      type: object
+      required: [kind, id, label]
+      properties:
+        kind:
+          type: string
+          enum: [player, match, tournament]
+        id:
+          type: string
+        label:
+          type: string
+        match_id:
+          type: string
+          format: uuid
+          nullable: true
+        steam_id:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+        source_log_id:
+          type: integer
+          nullable: true
+
+    QueryHealthResponse:
+      type: object
+      required: [status, side, db_reachable, match_count]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        side:
+          type: string
+          enum: [query]
+        db_reachable:
+          type: boolean
+        match_count:
+          type: integer
+        repair_hint:
+          type: string
+          nullable: true
+
+    CommandHealthResponse:
+      type: object
+      required: [status, side]
+      properties:
+        status:
+          type: string
+          enum: [ok]
+        side:
+          type: string
+          enum: [command]
+
+    # Domain / event schemas (integration contracts — see docs/specs/cdm/)
+    ClassStatSnapshot:
+      type: object
+      required: [class_name, class_id]
+      properties:
+        class_name:
+          type: string
+        class_id:
+          type: integer
+        playtime_seconds:
+          type: integer
+          default: 0
+        kills:
+          type: integer
+          default: 0
+        deaths:
+          type: integer
+          default: 0
+        assists:
+          type: integer
+          default: 0
+        dpm:
+          type: number
+          format: float
+          default: 0
+        primary_accuracy:
+          type: number
+          format: float
+          default: 0
+        damage_dealt:
+          type: integer
+          default: 0
+        damage_received:
+          type: integer
+          default: 0
+        heals_received:
+          type: integer
+          default: 0
+        healing_done:
+          type: integer
+          default: 0
+
+    PlayerStatSnapshot:
+      type: object
+      required: [steam_id, team]
+      properties:
+        steam_id:
+          type: string
+        team:
+          type: string
+        display_name:
+          type: string
+          nullable: true
+        classes_played:
+          type: array
+          items:
+            type: string
+        primary_class:
+          type: string
+          default: unknown
+        playtime_seconds:
+          type: integer
+          default: 0
+        kills:
+          type: integer
+          default: 0
+        deaths:
+          type: integer
+          default: 0
+        assists:
+          type: integer
+          default: 0
+        damage_per_minute:
+          type: number
+          format: float
+          default: 0
+        healing_done:
+          type: integer
+          default: 0
+        damage_received:
+          type: integer
+          default: 0
+        heals_received:
+          type: integer
+          default: 0
+        ubers:
+          type: integer
+          default: 0
+        drops:
+          type: integer
+          default: 0
+        captures:
+          type: integer
+          default: 0
+        headshots:
+          type: integer
+          default: 0
+        backstabs:
+          type: integer
+          default: 0
+        airshots:
+          type: integer
+          default: 0
+        class_stats:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClassStatSnapshot"
+
+    MatchCommandModel:
+      type: object
+      required: [match_id, map_name, blu_score, red_score]
+      properties:
+        match_id:
+          type: string
+          format: uuid
+        map_name:
+          type: string
+        blu_score:
+          type: integer
+        red_score:
+          type: integer
+        duration_seconds:
+          type: integer
+          default: 1800
+        players:
+          type: array
+          items:
+            $ref: "#/components/schemas/PlayerStatSnapshot"
+
+    TournamentCommandModel:
+      type: object
+      required: [tournament_id, name, slug]
+      properties:
+        tournament_id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        slug:
+          type: string
+        start_date:
+          type: string
+          format: date-time
+          nullable: true
+        end_date:
+          type: string
+          format: date-time
+          nullable: true
+
+    EventEnvelope:
+      type: object
+      required: [event_id, event_type, occurred_at, payload]
+      properties:
+        event_id:
+          type: string
+          format: uuid
+        event_type:
+          type: string
+          enum:
+            - MatchParsed
+            - LogEventCreated
+            - PlayerAliasUpdated
+            - TournamentCreated
+            - TournamentUpdated
+            - EventCreated
+            - EventUpdated
+            - TournamentLinkedToEvent
+            - MatchTournamentAssigned
+            - RatingsRebuildRequested
+            - RatingsRebuilt
+        occurred_at:
+          type: string
+          format: date-time
+        actor_id:
+          type: string
+          nullable: true
+        payload:
+          type: object
+          additionalProperties: true

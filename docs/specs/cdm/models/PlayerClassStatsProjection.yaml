@@ -1,0 +1,47 @@
+model: PlayerClassStatsProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: player_class_stats_view
+fields:
+- name: id
+  type: integer
+  required: false
+  primary_key: true
+- name: steam_id
+  type: string
+  required: true
+  indexed: true
+- name: class_name
+  type: string
+  required: true
+  indexed: true
+- name: matches_played
+  type: integer
+  required: true
+  default: 0
+- name: total_kills
+  type: integer
+  required: true
+  default: 0
+- name: total_deaths
+  type: integer
+  required: true
+  default: 0
+- name: total_assists
+  type: integer
+  required: true
+  default: 0
+- name: average_damage_per_minute
+  type: float
+  required: true
+  default: 0.0
+- name: total_healing_done
+  type: integer
+  required: true
+  default: 0
+- name: average_rating
+  type: float
+  required: true
+  default: 1.0

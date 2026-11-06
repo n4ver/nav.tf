@@ -1,0 +1,49 @@
+model: MatchSummaryProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: match_summary_view
+description: Materialized match summary; projected from MatchParsed.
+fields:
+- name: match_id
+  type: string
+  required: true
+  primary_key: true
+- name: tournament_id
+  type: string
+  required: false
+  indexed: true
+- name: source_log_id
+  type: integer
+  required: false
+  indexed: true
+- name: map_name
+  type: string
+  required: true
+  indexed: true
+- name: duration_seconds
+  type: integer
+  required: true
+- name: winning_team
+  type: string
+  required: true
+- name: date_played
+  type: datetime
+  required: true
+  indexed: true
+- name: blu_score
+  type: integer
+  required: true
+  default: 0
+- name: red_score
+  type: integer
+  required: true
+  default: 0
+- name: ratings_ready
+  type: boolean
+  required: true
+  default: false
+relationships:
+- view: MatchSummaryView
+  mapping: '1:1'

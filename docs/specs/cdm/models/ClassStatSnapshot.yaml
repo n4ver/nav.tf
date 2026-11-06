@@ -1,0 +1,52 @@
+model: ClassStatSnapshot
+kind: domain
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Per-class stats embedded in MatchParsed integration events.
+fields:
+- name: class_name
+  type: string
+  required: true
+- name: class_id
+  type: integer
+  required: true
+- name: playtime_seconds
+  type: integer
+  required: false
+  default: 0
+- name: kills
+  type: integer
+  required: false
+  default: 0
+- name: deaths
+  type: integer
+  required: false
+  default: 0
+- name: assists
+  type: integer
+  required: false
+  default: 0
+- name: dpm
+  type: float
+  required: false
+  default: 0.0
+- name: primary_accuracy
+  type: float
+  required: false
+  default: 0.0
+- name: damage_dealt
+  type: integer
+  required: false
+  default: 0
+- name: damage_received
+  type: integer
+  required: false
+  default: 0
+- name: heals_received
+  type: integer
+  required: false
+  default: 0
+- name: healing_done
+  type: integer
+  required: false
+  default: 0

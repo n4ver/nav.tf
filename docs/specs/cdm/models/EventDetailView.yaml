@@ -1,0 +1,12 @@
+model: EventDetailView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Event detail with nested tournament summaries.
+fields:
+- name: event
+  type: EventSummaryView
+  required: true
+- name: tournaments
+  type: array<TournamentSummaryView>
+  required: true

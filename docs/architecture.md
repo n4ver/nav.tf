@@ -53,7 +53,7 @@ This document describes the system architecture for TF2 Analytics: a platform th
 | **Query service** | `server/cqrs/query_service/` | 8002 | `cqrs_query` | Read model, projections, leaderboards, search |
 | **API consumer** | `api-consumer/` | 8010 | — | External auto-ingest (matcha.tf → logs.tf → RabbitMQ) |
 
-Shared infrastructure runs via `server/docker-compose.yml`: **Postgres 15** (port 5432) and **RabbitMQ 3.11** (AMQP 5672, management UI 15672).
+Shared infrastructure runs via `server/dev-setup/docker/docker-compose.yml` (included from `server/docker-compose.yml`): **Postgres 15** (port 5432) and **RabbitMQ 3.11** (AMQP 5672, management UI 15672).
 
 ## CQRS boundaries
 
@@ -61,8 +61,8 @@ Shared infrastructure runs via `server/docker-compose.yml`: **Postgres 15** (por
 
 The command service owns all mutations:
 
-- **Tables:** `raw_log_events`, `users`, `tournaments`
-- **Responsibilities:** parse SRCDS text or logs.tf JSON, persist raw events, upsert users/tournaments, publish integration events
+- **Tables:** `raw_log_events`, `users`, `tournaments`, `events`, `outbox_events`
+- **Responsibilities:** parse SRCDS text or logs.tf JSON, persist raw events, upsert users/tournaments/events, publish integration events
 - **Never exposes:** projection tables or precomputed ratings
 
 ### Read model (query side)
@@ -102,9 +102,7 @@ POST /api/v1/commands/logs/*  (command :8001)
                     │
                     ├──► Upsert match/player projections
                     │
-                    └──► RatingsRebuildRequested → rebuild benchmarks → RatingsRebuilt
-                              │
-                              └──► Refresh leaderboard_snapshot_view
+                    └──► rebuild ratings inline → refresh leaderboard_snapshot_view
                     │
                     ▼
              GET /api/v1/queries/*  (query :8002)  ◄── Web dashboard
@@ -133,13 +131,15 @@ Exchange: **`tf2-events`** (topic, durable). Queue: **`cqrs-query`** bound to ro
 
 | Event | Publisher | Consumer action |
 |---|---|---|
-| `MatchParsed` | Command, api-consumer | Upsert match/player projections; trigger rating rebuild |
+| `MatchParsed` | Command, api-consumer | Upsert match/player projections; rebuild ratings inline; refresh tournament/event leaderboards |
 | `LogEventCreated` | Command | Acknowledgment (query may log; no projection change) |
-| `RatingsRebuildRequested` | Query (internal) | Queue full benchmark rebuild |
-| `RatingsRebuilt` | Query (internal) | Refresh leaderboard snapshots |
 | `PlayerAliasUpdated` | Command | Update player identity projection |
 | `TournamentCreated` / `TournamentUpdated` | Command | Upsert tournament summary |
+| `EventCreated` / `EventUpdated` | Command | Upsert event summary |
+| `TournamentLinkedToEvent` | Command | Set tournament.event_id; rewrite event tournament list; rebuild event player stats |
+| `MatchTournamentAssigned` | Command | Move match to a tournament; recount; refresh leaderboards and event stats |
 | `MatchLogIngested` | api-consumer | Audit/provenance (optional) |
+| `RatingsRebuildRequested` / `RatingsRebuilt` | Legacy | Kept for in-flight messages only; ratings now rebuild inline on `MatchParsed` |
 
 Event envelope shape (`server/cqrs/shared/events.py`):
 
@@ -167,7 +167,7 @@ Steam OpenID login runs on the command service:
 **Admin-only** endpoints (require `ADMIN` role JWT):
 
 - All `POST/PATCH /api/v1/commands/*` routes
-- Web admin dashboard at `/admin/dashboard`
+- Web admin nested under `/admin` (ingest, events, tournaments, matches, players)
 
 Bootstrap first admins via `BOOTSTRAP_ADMIN_STEAM_IDS`. Seeding scripts authenticate with `SEED_SERVICE_TOKEN` (must match on command service and seed container).
 
@@ -183,18 +183,19 @@ Single Postgres instance, multiple logical databases:
 | `cqrs_query` | Read projections |
 | `cqrs_command_test` / `cqrs_query_test` | pytest isolation |
 
-Init scripts: `server/docker/postgres/init-cqrs-databases.sql` (first boot) and `ensure-cqrs-databases.sh` (idempotent via `db-init` service).
+Init scripts: `server/dev-setup/docker/postgres/init-cqrs-databases.sql` (first boot) and `ensure-cqrs-databases.sh` (idempotent via `db-init` service). Test DBs: `server/cqrs/tests/postgres/`.
 
 ## Rating pipeline
 
 Ratings are **never computed at request time** on the query API. After each `MatchParsed` projection:
 
 1. `PlayerMatchClassStatsProjection` stores per-class stat rows
-2. `ProjectionService.rebuild_ratings()` rebuilds `ClassRatingBenchmarkProjection` baselines
-3. `RatingService` (from `cqrs/shared/rating.py`) scores every class row against benchmarks
+2. `ProjectionService.rebuild_ratings()` rebuilds `ClassRatingBenchmarkProjection` baselines **in the same handler**
+3. `RatingService` (from `query_service/app/rating/service.py`) scores every class row against benchmarks
 4. `leaderboard_snapshot_view` is refreshed for tournament leaderboards
+5. If the match's tournament is linked to an event, event player stats are rebuilt
 
-The rating model is ported from the original Jupyter classifier notebook and shared between command parsers and query projections.
+The `RatingsRebuildRequested` / `RatingsRebuilt` events are legacy compatibility only and are no longer published.
 
 ## Deployment topology
 
@@ -203,7 +204,7 @@ The rating model is ported from the original Jupyter classifier notebook and sha
 ```bash
 cd server
 docker compose up -d db rabbitmq command-service query-service
-python seed_cqrs.py --http
+python dev-setup/seed/seed_cqrs.py --http
 
 cd ../web && npm install && npm run dev
 ```
@@ -240,21 +241,6 @@ docker compose --profile consumer up -d api-consumer
 | API consumer | Node 20, Express, amqplib, node-cron, opossum, pino, Jest |
 | Infrastructure | Docker Compose, Postgres 15, RabbitMQ 3.11 |
 | Experiments | Jupyter (`classifier/`) |
-
-## Monolith migration (completed)
-
-The original monolith on port `:8000` was removed in July 2026. Historical API mapping:
-
-| Former monolith endpoint | CQRS replacement |
-|---|---|
-| `POST /logs/ingest/{id}` | `POST /api/v1/commands/logs/ingest-logstf` or `ingest-cached` |
-| `GET /matches` | `GET /api/v1/queries/matches` |
-| `GET /logs/{id}/stats` | `GET /api/v1/queries/matches/{uuid}` |
-| `GET /players/{steam_id}/summary` | `GET /api/v1/queries/players/{steam_id}/stats` |
-| `GET /tournaments/{id}/leaderboard` | `GET /api/v1/queries/tournaments/{uuid}/leaderboard` |
-| `GET /search` | `GET /api/v1/queries/search` |
-
-See [server/LEGACY.md](../server/LEGACY.md) for details.
 
 ## Related documentation
 

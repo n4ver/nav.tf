@@ -74,7 +74,7 @@ Routing key format: `events.{EventType}` (e.g. `events.MatchParsed`).
 | `SEED_SERVICE_TOKEN` | — | Allows seed script to bypass admin JWT |
 | `FRONTEND_URL` | `http://localhost:5173` | Post-login redirect base |
 | `STEAM_OPENID_REALM` | `http://localhost:5173` | Steam OpenID realm |
-| `STEAM_OPENID_RETURN_TO` | `http://localhost:5173/api/v1/auth/steam/callback` | Callback URL |
+| `STEAM_OPENID_RETURN_TO` | `http://localhost:5173/api/auth/steam/callback` | Callback URL |
 | `STEAM_API_KEY` | — | Steam Web API for persona/avatar |
 | `BOOTSTRAP_ADMIN_STEAM_IDS` | — | Comma-separated Steam IDs promoted to ADMIN |
 | `SEED_CACHE_PATH` | `server/data/seed_logs_cache.json` | Cached logs for `ingest-cached` |

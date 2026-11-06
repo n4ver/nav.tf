@@ -1,0 +1,9 @@
+model: LinkTournamentToEventCommand
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Link or unlink a tournament to an event. Null event_id unlinks.
+fields:
+- name: event_id
+  type: uuid
+  required: false

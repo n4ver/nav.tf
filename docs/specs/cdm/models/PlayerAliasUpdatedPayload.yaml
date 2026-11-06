@@ -1,0 +1,12 @@
+model: PlayerAliasUpdatedPayload
+kind: event
+version: '1.0'
+source: server/cqrs/command_service/app/services.py
+description: Payload of PlayerAliasUpdated event.
+fields:
+- name: steam_id
+  type: string
+  required: true
+- name: display_name
+  type: string
+  required: true

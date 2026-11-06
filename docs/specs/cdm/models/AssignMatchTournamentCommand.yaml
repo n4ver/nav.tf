@@ -1,0 +1,9 @@
+model: AssignMatchTournamentCommand
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Reassign a match to a tournament.
+fields:
+- name: tournament_id
+  type: uuid
+  required: true

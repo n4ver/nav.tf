@@ -1,0 +1,31 @@
+model: EventSummaryProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: event_summary_view
+description: Materialized event catalog; projected from EventCreated/Updated and tournament links.
+fields:
+- name: event_id
+  type: string
+  required: true
+  primary_key: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+  indexed: true
+- name: tournaments
+  type: array<string>
+  required: false
+- name: started_at
+  type: datetime
+  required: false
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false

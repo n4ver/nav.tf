@@ -1,0 +1,18 @@
+model: RawLogUpload
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Upload raw SRCDS log text for parsing and ingestion.
+fields:
+- name: log_data
+  type: string
+  required: true
+  description: Full SRCDS log file contents
+- name: timestamp
+  type: datetime
+  required: false
+  description: Ingest timestamp; defaults to server UTC now
+- name: tournament_id
+  type: uuid
+  required: false
+  description: Optional write-side tournament UUID

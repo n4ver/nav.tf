@@ -1,0 +1,32 @@
+model: ClassRatingBenchmarkView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Public class rating baseline statistics.
+fields:
+- name: class_name
+  type: string
+  required: true
+- name: class_id
+  type: integer
+  required: true
+- name: sample_size
+  type: integer
+  required: true
+- name: avg_rating
+  type: float
+  required: true
+- name: std_rating
+  type: float
+  required: false
+  default: 0.0
+- name: min_rating
+  type: float
+  required: true
+- name: max_rating
+  type: float
+  required: true
+- name: p50_rating
+  type: float
+  required: false
+  default: 1.0

@@ -5,6 +5,7 @@ FastAPI-based CQRS split: a **command service** (write model) and a **query serv
 Write sessions and write tables never enter the query API. Read sessions and projection tables never enter the command flow. Only event payloads and shared DTOs cross the boundary.
 
 **Service READMEs:**
+
 - [Command service](command_service/README.md) — write API, auth, ingest
 - [Query service](query_service/README.md) — read API, projections, consumer
 
@@ -14,28 +15,38 @@ Write sessions and write tables never enter the query API. Read sessions and pro
 ```text
 cqrs/
   command_service/app/
-    main.py            # Write API routes
-    services.py        # Command handlers
-    parsers.py         # SRCDS log -> MatchCommandModel
-    logs_tf_parser.py  # logs.tf JSON -> MatchCommandModel
-    models.py          # Write DB tables (RawLogEvent, User, TournamentRecord)
     auth_service.py    # Steam login upsert + JWT issuance
-    dependencies.py    # JWT / Admin RBAC dependencies
     db.py              # Write engine / session DI
+    dependencies.py    # JWT / Admin RBAC dependencies
+    logs_tf_parser.py  # logs.tf JSON -> MatchCommandModel
+    main.py            # Write API routes
+    models.py          # Write DB tables (RawLogEvent, User, TournamentRecord)
+    outbox.py          # Transactional outbox
+    outbox_worker.py   # Background outbox relay
+    parsers.py         # SRCDS log -> MatchCommandModel
+    services.py        # Command handlers
   query_service/app/
-    main.py            # Read API routes
-    services.py        # Projection + query handlers
+    rating/            # Rating service
     consumer.py        # Broker subscriber
-    models.py          # Materialized views
     db.py              # Read engine / session DI
+    dependencies.py    # Dependencies for query-side
+    idempotency.py     # Idempotency handler
+    main.py            # Read API routes
+    models.py          # Materialized views
+    services.py        # Projection + query handlers
   shared/
     auth/              # Steam OpenID, JWT, UserRole
     broker.py          # RabbitMQ + in-memory fallback
+    cors.py            # CORS Middleware
     events.py          # Integration event envelopes
+    models.py          # Backwards Compatibility
+    paths.py           # CQRS Data helpers
     schemas.py         # Cross-boundary DTOs
-    rating.py          # Class rating math (notebook port)
+    seed_cache.py      # Load local cache for DB seeding
+    steam.py           # Steam helpers
+    tf2_classes.py     # TF2-specific logic
     timeutils.py       # UTC datetime helpers for Postgres
-    paths.py           # Database URL helpers
+    tournaments.py     # TODO: Remove
   tests/
 ```
 
@@ -57,7 +68,7 @@ Mutating command endpoints require an **ADMIN** JWT (`get_current_admin_user`):
 
 Set `JWT_SECRET`, `FRONTEND_URL`, `STEAM_OPENID_REALM`, `STEAM_OPENID_RETURN_TO`, optional `BOOTSTRAP_ADMIN_STEAM_IDS`, and `STEAM_API_KEY` (persona/avatar lookup on login).
 
-For local dev, open the site at **`http://localhost:5173`** (not HTTPS). Steam OpenID `return_to` must match that origin — defaults are `http://localhost:5173/api/v1/auth/steam/callback`. If Steam redirects to `https://localhost:8001` you will see `ERR_SSL_PROTOCOL_ERROR` because the command service speaks HTTP only.
+For local dev, open the site at **`http://localhost:5173`** (not HTTPS). Steam OpenID `return_to` must match that origin — defaults are `http://localhost:5173/api/auth/steam/callback` (Vite proxies `/api/auth` to the command service). If Steam redirects to `https://localhost:8001` you will see `ERR_SSL_PROTOCOL_ERROR` because the command service speaks HTTP only.
 
 **Seeding after auth:** mutating command endpoints require admin credentials. Docker seeding uses a shared `SEED_SERVICE_TOKEN` (must match on `seed` and `command-service`). Rebuild images after auth changes:
 
@@ -163,9 +174,9 @@ Seeding sends cached log metadata through the command service. RabbitMQ delivers
 cd server
 docker compose up -d db rabbitmq command-service query-service
 
-python seed_cqrs.py --http              # seed all cached logs
-python seed_cqrs.py --http --reset      # truncate tables, then seed
-python seed_cqrs.py --http --limit 10   # seed first 10 logs
+python dev-setup/seed/seed_cqrs.py --http              # seed all cached logs
+python dev-setup/seed/seed_cqrs.py --http --reset      # truncate tables, then seed
+python dev-setup/seed/seed_cqrs.py --http --limit 10   # seed first 10 logs
 ```
 
 One-shot via Docker:
@@ -178,7 +189,7 @@ With reset:
 
 ```bash
 docker compose --profile seed run --rm seed \
-  python seed_cqrs.py --http --reset --no-fallback
+  python dev-setup/seed/seed_cqrs.py --http --reset --no-fallback
 ```
 
 ### Direct seed (in-process, no RabbitMQ)
@@ -186,8 +197,8 @@ docker compose --profile seed run --rm seed \
 Writes to the same Postgres databases through CQRS handlers with an in-memory broker:
 
 ```bash
-python seed_cqrs.py --direct
-python seed_cqrs.py --direct --reset
+python dev-setup/seed/seed_cqrs.py --direct
+python dev-setup/seed/seed_cqrs.py --direct --reset
 ```
 
 Stop the query service first, or pass `--force` if it is already running.
@@ -195,11 +206,11 @@ Stop the query service first, or pass `--force` if it is already running.
 ### Building the seed cache
 
 ```bash
-python build_seed_cache.py              # fetch from logs.tf + write cache
-python build_seed_cache.py --skip-fetch   # rebuild manifest from existing cache
+python dev-setup/seed/build_seed_cache.py              # fetch from logs.tf + write cache
+python dev-setup/seed/build_seed_cache.py --skip-fetch   # rebuild manifest from existing cache
 ```
 
-Source log IDs come from [invite.txt](../invite.txt).
+Source log IDs come from [invite.txt](../dev-setup/seed/invite.txt).
 
 ### Reset behavior
 
@@ -234,4 +245,4 @@ python -m pytest cqrs/tests -q
 ```
 
 Tests require Docker Postgres with `cqrs_command_test` and `cqrs_query_test` databases (`docker compose up -d db db-init`).
-Test database init scripts are under `server/testing/postgres/`.
+Test database init scripts are under `server/cqrs/tests/postgres/`.

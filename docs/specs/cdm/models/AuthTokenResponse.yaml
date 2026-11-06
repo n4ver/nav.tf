@@ -1,0 +1,9 @@
+model: AuthTokenResponse
+kind: auth
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: JWT bearer token issued after code exchange.
+fields:
+- name: token
+  type: string
+  required: true

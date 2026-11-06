@@ -1,0 +1,16 @@
+model: UpdatePlayerDisplayNameCommand
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Admin command to set a player display alias.
+fields:
+- name: steam_id
+  type: string
+  required: true
+  description: SteamID2 or SteamID64
+- name: display_name
+  type: string
+  required: true
+  constraints:
+  - 'min_length: 1'
+  - 'max_length: 128'

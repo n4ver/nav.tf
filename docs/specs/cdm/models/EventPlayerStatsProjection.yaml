@@ -1,0 +1,52 @@
+model: EventPlayerStatsProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: event_player_stats_view
+description: Per-player aggregates across all tournaments in an event.
+fields:
+- name: event_id
+  type: string
+  required: true
+  primary_key: true
+- name: steam_id
+  type: string
+  required: true
+  primary_key: true
+  indexed: true
+- name: classes_played
+  type: array<string>
+  required: false
+- name: primary_class
+  type: string
+  required: true
+  default: unknown
+- name: playtime_seconds
+  type: integer
+  required: true
+  default: 0
+- name: kills
+  type: integer
+  required: true
+  default: 0
+- name: deaths
+  type: integer
+  required: true
+  default: 0
+- name: assists
+  type: integer
+  required: true
+  default: 0
+- name: damage_per_minute
+  type: float
+  required: true
+  default: 0.0
+- name: healing_done
+  type: integer
+  required: true
+  default: 0
+- name: rating
+  type: float
+  required: true
+  default: 1.0

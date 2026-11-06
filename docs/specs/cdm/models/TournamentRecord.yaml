@@ -1,0 +1,43 @@
+model: TournamentRecord
+kind: persistence-write
+version: '1.0'
+source: server/cqrs/command_service/app/models.py
+database: cqrs_command
+table: tournaments
+description: Write-side tournament aggregate.
+fields:
+- name: tournament_id
+  type: string
+  required: true
+  primary_key: true
+- name: event_id
+  type: string
+  required: false
+  indexed: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+  unique: true
+  indexed: true
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false
+- name: created_by
+  type: string
+  required: true
+  indexed: true
+- name: updated_by
+  type: string
+  required: false
+- name: created_at
+  type: datetime
+  required: true
+- name: updated_at
+  type: datetime
+  required: true

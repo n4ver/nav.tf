@@ -1,0 +1,21 @@
+model: EventCommandModel
+kind: domain
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Event aggregate payload used inside integration events.
+fields:
+- name: event_id
+  type: uuid
+  required: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false

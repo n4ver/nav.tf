@@ -1,0 +1,39 @@
+model: MatchParsedPayload
+kind: event
+version: '1.0'
+source: server/cqrs/command_service/app/services.py
+description: Payload of MatchParsed event (event_type=MatchParsed).
+fields:
+- name: match_id
+  type: uuid
+  required: true
+- name: map_name
+  type: string
+  required: true
+- name: blu_score
+  type: integer
+  required: true
+- name: red_score
+  type: integer
+  required: true
+- name: duration_seconds
+  type: integer
+  required: true
+- name: players
+  type: array<PlayerStatSnapshot>
+  required: true
+- name: date_played
+  type: datetime
+  required: true
+- name: tournament
+  type: TournamentCommandModel
+  required: true
+- name: source_log_id
+  type: integer
+  required: false
+- name: actor_id
+  type: string
+  required: false
+relationships:
+- envelope: EventEnvelope
+  event_type: MatchParsed

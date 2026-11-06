@@ -1,0 +1,42 @@
+model: PlayerLifetimeStatsView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Full player profile aggregate.
+fields:
+- name: steam_id
+  type: string
+  required: true
+- name: display_name
+  type: string
+  required: false
+- name: matches_played
+  type: integer
+  required: true
+- name: total_kills
+  type: integer
+  required: true
+- name: total_deaths
+  type: integer
+  required: true
+- name: total_assists
+  type: integer
+  required: true
+- name: average_damage_per_minute
+  type: float
+  required: true
+- name: total_healing_done
+  type: integer
+  required: true
+- name: average_rating
+  type: float
+  required: false
+  default: 1.0
+- name: class_breakdown
+  type: array<PlayerClassAggregateView>
+  required: false
+  default: []
+- name: recent_matches
+  type: array<PlayerRecentMatchView>
+  required: false
+  default: []

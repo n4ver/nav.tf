@@ -1,0 +1,37 @@
+model: LeaderboardEntryView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Tournament leaderboard row (all-classes or per-class).
+fields:
+- name: steam_id
+  type: string
+  required: true
+- name: display_name
+  type: string
+  required: false
+- name: matches_played
+  type: integer
+  required: true
+- name: total_kills
+  type: integer
+  required: true
+- name: total_deaths
+  type: integer
+  required: true
+- name: total_assists
+  type: integer
+  required: true
+- name: average_damage_per_minute
+  type: float
+  required: true
+- name: total_healing_done
+  type: integer
+  required: true
+- name: average_rating
+  type: float
+  required: true
+- name: primary_class
+  type: string
+  required: false
+  default: unknown

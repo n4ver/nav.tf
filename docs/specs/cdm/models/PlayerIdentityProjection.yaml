@@ -1,0 +1,31 @@
+model: PlayerIdentityProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: player_identity_view
+fields:
+- name: steam_id
+  type: string
+  required: true
+  primary_key: true
+- name: steam_id64
+  type: string
+  required: false
+  indexed: true
+- name: persona_name
+  type: string
+  required: false
+- name: custom_alias
+  type: string
+  required: false
+- name: avatar_url
+  type: string
+  required: false
+- name: resolved_at
+  type: datetime
+  required: false
+- name: resolve_failed
+  type: boolean
+  required: true
+  default: false

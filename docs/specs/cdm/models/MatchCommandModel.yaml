@@ -1,0 +1,30 @@
+model: MatchCommandModel
+kind: domain
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Normalized match aggregate produced by command-side parsers.
+fields:
+- name: match_id
+  type: uuid
+  required: true
+- name: map_name
+  type: string
+  required: true
+- name: blu_score
+  type: integer
+  required: true
+- name: red_score
+  type: integer
+  required: true
+- name: duration_seconds
+  type: integer
+  required: false
+  default: 1800
+- name: players
+  type: array<PlayerStatSnapshot>
+  required: false
+  default: []
+relationships:
+- field: players
+  target: PlayerStatSnapshot
+  cardinality: 1:N

@@ -1,0 +1,24 @@
+model: AuthLoginCode
+kind: persistence-write
+version: '1.0'
+source: server/cqrs/command_service/app/models.py
+database: cqrs_command
+table: auth_login_codes
+description: One-time code exchanged for JWT after Steam OpenID redirect.
+fields:
+- name: code
+  type: string
+  required: true
+  primary_key: true
+- name: token
+  type: string
+  required: true
+- name: created_at
+  type: datetime
+  required: true
+- name: expires_at
+  type: datetime
+  required: true
+- name: used_at
+  type: datetime
+  required: false

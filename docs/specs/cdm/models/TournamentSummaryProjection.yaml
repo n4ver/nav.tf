@@ -1,0 +1,29 @@
+model: TournamentSummaryProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: tournament_summary_view
+fields:
+- name: tournament_id
+  type: string
+  required: true
+  primary_key: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+  indexed: true
+- name: match_count
+  type: integer
+  required: true
+  default: 0
+- name: started_at
+  type: datetime
+  required: false
+- name: event_id
+  type: string
+  required: false
+  indexed: true

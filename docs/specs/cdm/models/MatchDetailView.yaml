@@ -1,0 +1,12 @@
+model: MatchDetailView
+kind: view
+version: '1.0'
+source: server/cqrs/query_service/app/services.py
+description: Composite match detail response (not a Pydantic model — API envelope).
+fields:
+- name: match_summary
+  type: MatchSummaryView
+  required: true
+- name: players
+  type: array<PlayerStatsView>
+  required: true

@@ -1,0 +1,30 @@
+model: PlayerClassAggregateView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Lifetime per-class aggregate on player profile.
+fields:
+- name: class_name
+  type: string
+  required: true
+- name: matches_played
+  type: integer
+  required: true
+- name: total_kills
+  type: integer
+  required: true
+- name: total_deaths
+  type: integer
+  required: true
+- name: total_assists
+  type: integer
+  required: true
+- name: average_damage_per_minute
+  type: float
+  required: true
+- name: total_healing_done
+  type: integer
+  required: true
+- name: average_rating
+  type: float
+  required: true

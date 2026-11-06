@@ -1,0 +1,50 @@
+model: RawLogEvent
+kind: persistence-write
+version: '1.0'
+source: server/cqrs/command_service/app/models.py
+database: cqrs_command
+table: raw_log_events
+description: Immutable raw log ingest record.
+fields:
+- name: id
+  type: integer
+  required: false
+  primary_key: true
+- name: source_log_id
+  type: integer
+  required: false
+  unique: true
+  indexed: true
+- name: content_hash
+  type: string
+  required: false
+  unique: true
+  indexed: true
+- name: match_id
+  type: string
+  required: true
+  unique: true
+  indexed: true
+- name: raw_log
+  type: text
+  required: true
+- name: map_name
+  type: string
+  required: true
+- name: blu_score
+  type: integer
+  required: true
+- name: red_score
+  type: integer
+  required: true
+- name: timestamp
+  type: datetime
+  required: true
+- name: actor_id
+  type: string
+  required: false
+  indexed: true
+- name: tournament_id
+  type: string
+  required: false
+  indexed: true

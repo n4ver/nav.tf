@@ -1,0 +1,28 @@
+model: SearchResultView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Unified search hit for players, matches, or tournaments.
+fields:
+- name: kind
+  type: string
+  required: true
+  description: player | match | tournament
+- name: id
+  type: string
+  required: true
+- name: label
+  type: string
+  required: true
+- name: match_id
+  type: uuid
+  required: false
+- name: steam_id
+  type: string
+  required: false
+- name: display_name
+  type: string
+  required: false
+- name: source_log_id
+  type: integer
+  required: false

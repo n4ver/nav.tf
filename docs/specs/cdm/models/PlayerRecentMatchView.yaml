@@ -1,0 +1,42 @@
+model: PlayerRecentMatchView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Recent match snippet on player profile.
+fields:
+- name: match_id
+  type: uuid
+  required: true
+- name: map_name
+  type: string
+  required: true
+- name: date_played
+  type: datetime
+  required: true
+- name: team
+  type: string
+  required: true
+- name: classes_played
+  type: array<string>
+  required: false
+  default: []
+- name: kills
+  type: integer
+  required: true
+- name: deaths
+  type: integer
+  required: true
+- name: assists
+  type: integer
+  required: true
+- name: damage_per_minute
+  type: float
+  required: true
+- name: healing_done
+  type: integer
+  required: false
+  default: 0
+- name: rating
+  type: float
+  required: false
+  default: 1.0

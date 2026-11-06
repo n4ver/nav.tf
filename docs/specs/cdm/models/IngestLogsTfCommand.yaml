@@ -1,0 +1,16 @@
+model: IngestLogsTfCommand
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Fetch and ingest a log live from the logs.tf API.
+fields:
+- name: logstf_id
+  type: integer
+  required: true
+  constraints:
+  - 'gt: 0'
+  description: logs.tf log id
+- name: tournament_id
+  type: uuid
+  required: false
+  description: Optional write-side tournament UUID

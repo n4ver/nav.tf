@@ -1,0 +1,24 @@
+model: TournamentMutationPayload
+kind: event
+version: '1.0'
+source: server/cqrs/command_service/app/services.py
+description: Payload of TournamentCreated and TournamentUpdated events.
+fields:
+- name: tournament_id
+  type: uuid
+  required: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false
+- name: event_id
+  type: uuid
+  required: false

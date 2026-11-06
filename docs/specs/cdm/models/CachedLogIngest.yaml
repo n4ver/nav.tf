@@ -1,0 +1,27 @@
+model: CachedLogIngest
+kind: command
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Ingest a log from the seed cache or inline JSON payload.
+fields:
+- name: log_id
+  type: integer
+  required: true
+  description: logs.tf log identifier
+- name: tournament_id
+  type: integer
+  required: true
+  description: Seed catalog tournament id
+- name: section
+  type: string
+  required: false
+  default: unknown
+  description: Seed section label
+- name: data
+  type: object
+  required: false
+  description: Inline logs.tf JSON; loaded from SEED_CACHE_PATH when omitted
+- name: timestamp
+  type: datetime
+  required: false
+  description: Match played timestamp override

@@ -1,0 +1,47 @@
+model: OutboxEvent
+kind: persistence-write
+version: '1.0'
+source: server/cqrs/command_service/app/models.py
+database: cqrs_command
+table: outbox_events
+description: Transactional outbox row relayed to RabbitMQ.
+fields:
+- name: id
+  type: integer
+  required: false
+  primary_key: true
+- name: event_id
+  type: uuid
+  required: true
+  unique: true
+  indexed: true
+- name: event_type
+  type: string
+  required: true
+  indexed: true
+- name: payload
+  type: text
+  required: true
+  description: JSON-serialized EventEnvelope
+- name: status
+  type: enum
+  required: true
+  enum:
+  - pending
+  - published
+  - failed
+  default: pending
+- name: created_at
+  type: datetime
+  required: true
+  indexed: true
+- name: published_at
+  type: datetime
+  required: false
+- name: attempts
+  type: integer
+  required: true
+  default: 0
+- name: last_error
+  type: string
+  required: false

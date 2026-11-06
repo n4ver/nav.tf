@@ -1,0 +1,32 @@
+model: EventSummaryView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Event catalog row.
+fields:
+- name: event_id
+  type: uuid
+  required: true
+- name: name
+  type: string
+  required: true
+- name: slug
+  type: string
+  required: true
+- name: start_date
+  type: datetime
+  required: false
+- name: end_date
+  type: datetime
+  required: false
+- name: tournament_ids
+  type: array<uuid>
+  required: false
+- name: tournament_count
+  type: integer
+  required: false
+  default: 0
+- name: match_count
+  type: integer
+  required: false
+  default: 0

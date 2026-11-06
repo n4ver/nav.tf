@@ -1,0 +1,19 @@
+model: ProcessedEvent
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: processed_events
+description: Idempotency ledger for integration events applied to read models.
+fields:
+- name: event_id
+  type: uuid
+  required: true
+  primary_key: true
+- name: event_type
+  type: string
+  required: true
+  indexed: true
+- name: processed_at
+  type: datetime
+  required: true

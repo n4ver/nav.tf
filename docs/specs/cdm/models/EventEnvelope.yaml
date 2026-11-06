@@ -1,0 +1,22 @@
+model: EventEnvelope
+kind: event
+version: '1.0'
+source: server/cqrs/shared/events.py
+description: 'RabbitMQ integration event wrapper. Routing key: events.{event_type}.'
+fields:
+- name: event_id
+  type: uuid
+  required: true
+- name: event_type
+  type: string
+  required: true
+- name: occurred_at
+  type: datetime
+  required: true
+- name: actor_id
+  type: string
+  required: false
+  description: Admin steam_id when applicable
+- name: payload
+  type: object
+  required: true

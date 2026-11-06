@@ -15,6 +15,7 @@ nav.tf/
     cqrs/
       command_service/    Write API + auth (:8001)
       query_service/      Read API + projections (:8002)
+    dev-setup/            Docker, tests, coverage, seed tooling
   api-consumer/           External auto-ingest (:8010)
   docs/architecture.md    Full architecture design
 ```
@@ -43,7 +44,7 @@ cd server
 docker compose up -d --build
 ```
 
-This starts Postgres, RabbitMQ, command service, query service, and the web dev server.
+This starts Postgres, RabbitMQ, command service, query service, the Nginx gateway (:8095), and the web dev server.
 
 Minimal backend only:
 
@@ -61,7 +62,7 @@ docker compose --profile consumer up -d api-consumer
 
 ```bash
 cd server
-python seed_cqrs.py --http
+python dev-setup/seed/seed_cqrs.py --http
 ```
 
 Or via Docker:
@@ -73,10 +74,10 @@ docker compose --profile seed run --rm seed
 Reset and re-seed:
 
 ```bash
-python seed_cqrs.py --http --reset
+python dev-setup/seed/seed_cqrs.py --http --reset
 ```
 
-Seed data comes from `server/data/seed_logs_cache.json` (built from `invite.txt` via `build_seed_cache.py`).
+Seed data comes from `server/data/seed_logs_cache.json` (built from `dev-setup/seed/invite.txt` via `dev-setup/seed/build_seed_cache.py`).
 
 ### 3. Open the dashboard
 
@@ -88,13 +89,17 @@ npm install
 npm run dev
 ```
 
+> If `web/.env` sets `VITE_GATEWAY_PROXY_TARGET=http://127.0.0.1:8095`, the gateway must be running
+> (it is not part of the minimal backend above), otherwise API calls return 502. Remove that line to
+> proxy straight to the command and query services. See [web/README.md](web/README.md).
+
 Open **http://localhost:5173** and verify:
 
 - **Tournament** — leaderboard and recent matches
 - **Match** — per-player stats and class ratings
 - **Player** — career totals and class breakdown
 - **Nav lookup** — logs.tf ID, match UUID, or SteamID
-- **Admin** — `/admin/dashboard` (Steam login + ADMIN role)
+- **Admin** — `/admin` (Steam login + ADMIN role; ingest, events, tournaments, matches, aliases)
 
 ## Local development (host Python)
 
@@ -122,7 +127,6 @@ Copy `server/.env.example` for environment overrides.
 | [Query service](server/cqrs/query_service/README.md) | Read API, projections |
 | [Web dashboard](web/README.md) | Frontend routes, proxy, build |
 | [API consumer](api-consumer/README.md) | matcha.tf auto-ingest |
-| [Monolith migration notes](server/LEGACY.md) | Historical API mapping (monolith removed) |
 
 ## Tests
 

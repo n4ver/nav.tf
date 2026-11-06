@@ -1,0 +1,42 @@
+model: MatchSummaryView
+kind: view
+version: '1.0'
+source: server/cqrs/shared/schemas.py
+description: Match list row and summary header on match detail.
+fields:
+- name: match_id
+  type: uuid
+  required: true
+- name: tournament_id
+  type: uuid
+  required: false
+- name: source_log_id
+  type: integer
+  required: false
+- name: map_name
+  type: string
+  required: true
+- name: duration_seconds
+  type: integer
+  required: true
+- name: winning_team
+  type: string
+  required: true
+- name: blu_score
+  type: integer
+  required: false
+  default: 0
+- name: red_score
+  type: integer
+  required: false
+  default: 0
+- name: date_played
+  type: datetime
+  required: true
+- name: ratings_ready
+  type: boolean
+  required: false
+  default: false
+relationships:
+- projection: MatchSummaryProjection
+  mapping: '1:1'

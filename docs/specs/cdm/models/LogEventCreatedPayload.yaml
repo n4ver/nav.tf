@@ -1,0 +1,18 @@
+model: LogEventCreatedPayload
+kind: event
+version: '1.0'
+source: server/cqrs/command_service/app/services.py
+description: Payload of LogEventCreated event.
+fields:
+- name: match_id
+  type: uuid
+  required: true
+- name: source_log_id
+  type: integer
+  required: false
+- name: raw_log_persisted
+  type: boolean
+  required: true
+- name: actor_id
+  type: string
+  required: false

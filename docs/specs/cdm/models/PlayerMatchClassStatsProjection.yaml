@@ -1,0 +1,81 @@
+model: PlayerMatchClassStatsProjection
+kind: persistence-read
+version: '1.0'
+source: server/cqrs/query_service/app/models.py
+database: cqrs_query
+table: player_match_class_stats_view
+constraints:
+- unique(steam_id, match_id, class_id)
+fields:
+- name: id
+  type: integer
+  required: false
+  primary_key: true
+- name: steam_id
+  type: string
+  required: true
+  indexed: true
+- name: match_id
+  type: string
+  required: true
+  indexed: true
+- name: tournament_id
+  type: string
+  required: false
+  indexed: true
+- name: team
+  type: string
+  required: true
+  default: unknown
+- name: class_name
+  type: string
+  required: true
+  indexed: true
+- name: class_id
+  type: integer
+  required: true
+  indexed: true
+- name: playtime_seconds
+  type: integer
+  required: true
+  default: 0
+- name: kills
+  type: integer
+  required: true
+  default: 0
+- name: deaths
+  type: integer
+  required: true
+  default: 0
+- name: assists
+  type: integer
+  required: true
+  default: 0
+- name: dpm
+  type: float
+  required: true
+  default: 0.0
+- name: primary_accuracy
+  type: float
+  required: true
+  default: 0.0
+- name: damage_dealt
+  type: integer
+  required: true
+  default: 0
+- name: damage_received
+  type: integer
+  required: true
+  default: 0
+- name: heals_received
+  type: integer
+  required: true
+  default: 0
+- name: healing_done
+  type: integer
+  required: true
+  default: 0
+- name: rating
+  type: float
+  required: true
+  default: 1.0
