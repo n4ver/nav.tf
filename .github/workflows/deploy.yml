@@ -1,0 +1,142 @@
+name: Deploy
+
+# Builds images, pushes them to Artifact Registry and deploys to the GCE VM.
+# Runs after CI succeeds on a push to main, or manually (optionally with an
+# existing image tag to roll back to). Auth uses Workload Identity Federation,
+# so there are no long-lived keys; app secrets stay in Secret Manager and are
+# read by the VM itself. Set the repository variables printed by
+# deploy/gcp/bootstrap.sh (see deploy/README.md).
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Existing image tag (git SHA) to deploy instead of building. Leave empty to build this commit."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://${{ vars.DOMAIN }}
+    env:
+      REGISTRY: ${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/navtf
+      SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Resolve image tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          tag="${INPUT_TAG:-$SOURCE_SHA}"
+          if [[ ! "$tag" =~ ^[0-9A-Za-z._-]+$ ]]; then
+            echo "Invalid image tag: $tag" >&2
+            exit 1
+          fi
+          echo "value=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - uses: docker/setup-buildx-action@v3
+        if: inputs.image_tag == ''
+
+      - name: Build and push server image
+        if: inputs.image_tag == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/server.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/server:${{ steps.tag.outputs.value }}
+          cache-from: type=gha,scope=server
+          cache-to: type=gha,mode=max,scope=server
+
+      - name: Build and push web image
+        if: inputs.image_tag == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/web.Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/web:${{ steps.tag.outputs.value }}
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Build and push api-consumer image
+        if: inputs.image_tag == ''
+        uses: docker/build-push-action@v6
+        with:
+          context: api-consumer
+          push: true
+          tags: ${{ env.REGISTRY }}/api-consumer:${{ steps.tag.outputs.value }}
+          cache-from: type=gha,scope=api-consumer
+          cache-to: type=gha,mode=max,scope=api-consumer
+
+      - name: Copy deploy files to the VM
+        env:
+          VM: ${{ vars.GCP_VM_NAME }}
+          ZONE: ${{ vars.GCP_ZONE }}
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+        run: |
+          ssh_opts=(--project="$PROJECT" --zone="$ZONE" --tunnel-through-iap --quiet --strict-host-key-checking=no)
+          gcloud compute ssh "$VM" "${ssh_opts[@]}" --command='rm -rf /tmp/navtf-deploy && mkdir -p /tmp/navtf-deploy'
+          gcloud compute scp "${ssh_opts[@]}" \
+            deploy/compose.prod.yml deploy/vm/deploy.sh deploy/postgres/ensure-cqrs-databases.sh \
+            "$VM":/tmp/navtf-deploy/
+
+      - name: Deploy on the VM
+        env:
+          VM: ${{ vars.GCP_VM_NAME }}
+          ZONE: ${{ vars.GCP_ZONE }}
+          PROJECT: ${{ vars.GCP_PROJECT_ID }}
+          TAG: ${{ steps.tag.outputs.value }}
+          DOMAIN: ${{ vars.DOMAIN }}
+          ACME_EMAIL: ${{ vars.ACME_EMAIL }}
+          GCP_REGION: ${{ vars.GCP_REGION }}
+          BOOTSTRAP_ADMIN_STEAM_IDS: ${{ vars.BOOTSTRAP_ADMIN_STEAM_IDS }}
+          API_CONSUMER_POLL_ENABLED: ${{ vars.API_CONSUMER_POLL_ENABLED || 'false' }}
+        run: |
+          printf -v remote 'sudo env GCP_PROJECT_ID=%q GCP_REGION=%q DOMAIN=%q ACME_EMAIL=%q BOOTSTRAP_ADMIN_STEAM_IDS=%q API_CONSUMER_POLL_ENABLED=%q bash /tmp/navtf-deploy/deploy.sh deploy %q' \
+            "$PROJECT" "$GCP_REGION" "$DOMAIN" "$ACME_EMAIL" "$BOOTSTRAP_ADMIN_STEAM_IDS" "$API_CONSUMER_POLL_ENABLED" "$TAG"
+          gcloud compute ssh "$VM" --project="$PROJECT" --zone="$ZONE" --tunnel-through-iap \
+            --quiet --strict-host-key-checking=no --command="$remote"
+
+      - name: Public health check
+        env:
+          DOMAIN: ${{ vars.DOMAIN }}
+        run: |
+          for i in $(seq 1 12); do
+            if curl -fsS --max-time 10 "https://${DOMAIN}/health"; then echo; exit 0; fi
+            echo "waiting for https://${DOMAIN}/health ($i/12)"; sleep 10
+          done
+          echo "::warning::https://${DOMAIN}/health is not reachable (check DNS / certificate). The VM reported healthy services."
