@@ -156,13 +156,10 @@ async function submitLookup() {
       <RouterLink
         to="/"
         class="focus-ring flex shrink-0 items-center gap-2 rounded-sm"
-        aria-label="TF2 Logs home"
+        aria-label="nav.tf home"
+        data-test="brand"
       >
-        <span
-          class="flex h-7 w-7 items-center justify-center rounded-sm bg-accent text-xs font-black text-white"
-          aria-hidden="true"
-        >TF</span>
-        <span class="hidden text-sm font-bold tracking-wide text-ink sm:inline">TF2 Logs</span>
+        <span class="text-base font-black tracking-tight text-ink">nav.tf</span>
       </RouterLink>
 
       <nav class="hidden h-full items-stretch lg:flex" aria-label="Primary">

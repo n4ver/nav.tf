@@ -192,6 +192,86 @@ paths:
         "502":
           description: logs.tf upstream error
 
+  /api/command/sources/matcha/status:
+    get:
+      tags: [Commands]
+      summary: api-consumer (matcha.tf) integration status
+      description: Whether the command service has an api-consumer URL and key, and whether its /health answers.
+      operationId: getMatchaSourceStatus
+      x-internal-path: /api/v1/commands/sources/matcha/status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Integration status
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [configured, reachable, source_site]
+                properties:
+                  configured:
+                    type: boolean
+                  reachable:
+                    type: boolean
+                  source_site:
+                    type: string
+                    example: matcha.tf
+
+  /api/command/sources/matcha/matches:
+    post:
+      tags: [Commands]
+      summary: Ingest a matcha.tf match via the api-consumer
+      description: |
+        Forwards to the api-consumer's `POST /webhooks/matcha/match` with the server-held API key.
+        The MatchaAdapter fetches the series, enriches each map log from logs.tf and publishes
+        `MatchParsed` events; the response is the api-consumer's ingest result.
+      operationId: ingestMatchaMatch
+      x-internal-path: /api/v1/commands/sources/matcha/matches
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IngestMatchaMatchCommand"
+      responses:
+        "202":
+          description: "api-consumer ingest result ({ accepted, skipped, noLogs, published[] })"
+        "502":
+          description: matcha.tf or logs.tf upstream error
+        "503":
+          description: api-consumer not configured, unreachable, or rejected the key
+        "504":
+          description: api-consumer timed out
+
+  /api/command/sources/matcha/poll:
+    post:
+      tags: [Commands]
+      summary: Poll the configured matcha.tf league via the api-consumer
+      operationId: pollMatcha
+      x-internal-path: /api/v1/commands/sources/matcha/poll
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PollMatchaCommand"
+      responses:
+        "202":
+          description: Poll summary (matchIds, accepted, skipped, noLogs, failed, failedMatchIds)
+        "409":
+          description: A poll is already running
+        "502":
+          description: matcha.tf upstream error
+        "503":
+          description: api-consumer not configured, unreachable, or rejected the key
+        "504":
+          description: api-consumer timed out
+
   /api/command/players/display-name:
     post:
       tags: [Commands]
@@ -512,6 +592,34 @@ paths:
         "404":
           description: Event not found
 
+  /api/query/leaderboard:
+    get:
+      tags: [Queries]
+      summary: Leaderboard across every tournament
+      operationId: getGlobalLeaderboard
+      x-internal-path: /api/v1/queries/leaderboard
+      parameters:
+        - name: class_name
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 200
+      responses:
+        "200":
+          description: Leaderboard rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/LeaderboardEntryView"
+
   /api/query/events/{event_id}/leaderboard:
     get:
       tags: [Queries]
@@ -731,6 +839,23 @@ components:
         timestamp:
           type: string
           format: date-time
+
+    IngestMatchaMatchCommand:
+      type: object
+      required: [match_id]
+      properties:
+        match_id:
+          type: integer
+          minimum: 1
+          description: matcha.tf match (series) ID
+
+    PollMatchaCommand:
+      type: object
+      properties:
+        reset:
+          type: boolean
+          default: false
+          description: Clear the api-consumer's idempotency store first, re-publishing matches it has already seen
 
     IngestLogsTfCommand:
       type: object

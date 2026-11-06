@@ -13,6 +13,8 @@ vi.mock('../api', () => ({
   fetchTournaments: vi.fn(),
   fetchMatches: vi.fn(),
   fetchTournamentLeaderboard: vi.fn(),
+  fetchEventLeaderboard: vi.fn(),
+  fetchGlobalLeaderboard: vi.fn(),
   fetchClassBenchmarks: vi.fn(),
 }))
 
@@ -43,23 +45,72 @@ describe('TournamentView', () => {
     api.fetchMatches.mockResolvedValue([
       { match_id: 'abcdef12-0000', map_name: 'cp_gully', winning_team: 'red', duration_seconds: 1500 },
     ])
-    api.fetchTournamentLeaderboard.mockResolvedValue([
+    const rows = [
       { steam_id: 's-1', display_name: 'Scout Main', average_rating: 1.3, total_kills: 5, total_deaths: 1, total_assists: 2 },
-    ])
+    ]
+    api.fetchTournamentLeaderboard.mockResolvedValue(rows)
+    api.fetchEventLeaderboard.mockResolvedValue(rows)
+    api.fetchGlobalLeaderboard.mockResolvedValue(rows)
     api.fetchClassBenchmarks.mockResolvedValue([{ class_name: 'scout', sample_size: 4, avg_rating: 1 }])
   })
 
   describe('populated', () => {
-    it('selects the first tournament and loads its matches and leaderboard', async () => {
+    it('opens on all matches across all events', async () => {
       // Arrange / Act
       const wrapper = await mountView()
 
       // Assert
-      expect(api.fetchMatches).toHaveBeenCalledWith(expect.objectContaining({ tournamentId: 't-1' }))
-      expect(api.fetchTournamentLeaderboard).toHaveBeenCalledWith('t-1', expect.anything())
+      expect(api.fetchMatches).toHaveBeenCalledWith(
+        expect.objectContaining({ tournamentId: null, eventId: null }),
+      )
+      expect(api.fetchGlobalLeaderboard).toHaveBeenCalledTimes(1)
+      expect(api.fetchTournamentLeaderboard).not.toHaveBeenCalled()
+      const allTab = wrapper.get('[data-test="tab-all"]')
+      expect(allTab.attributes('aria-pressed')).toBe('true')
+      expect(allTab.text()).toBe('All matches 3')
+      expect(wrapper.text()).toContain('All matches — leaderboard')
       expect(wrapper.text()).toContain('cp_gully')
       expect(wrapper.text()).toContain('Scout Main')
       expect(wrapper.text()).toContain('25m')
+    })
+
+    it('labels tournaments as "Event - Tournament"', async () => {
+      const wrapper = await mountView()
+
+      const labels = wrapper
+        .findAll('[data-test="tournament-tabs"] button')
+        .map((tab) => tab.text())
+      expect(labels).toEqual(['All matches 3', 'Season One - Invite 2', 'Open 1'])
+    })
+
+    it('scopes matches and leaderboard to the chosen event', async () => {
+      // Arrange
+      const wrapper = await mountView()
+
+      // Act
+      await wrapper.get('[data-test="event-filter"]').setValue('e-1')
+      await flushPromises()
+
+      // Assert
+      expect(api.fetchEventLeaderboard).toHaveBeenCalledWith('e-1', expect.anything())
+      expect(api.fetchMatches).toHaveBeenLastCalledWith(
+        expect.objectContaining({ tournamentId: null, eventId: 'e-1' }),
+      )
+      expect(wrapper.get('[data-test="tab-all"]').text()).toBe('Season One - All matches 2')
+      expect(wrapper.text()).not.toContain('Open 1')
+    })
+
+    it('falls back to the event matches when the event hides the selected tournament', async () => {
+      // Arrange
+      const wrapper = await mountView({ path: '/?tournament=t-2' })
+
+      // Act
+      await wrapper.get('[data-test="event-filter"]').setValue('e-1')
+      await flushPromises()
+
+      // Assert
+      expect(wrapper.get('[data-test="tab-all"]').attributes('aria-pressed')).toBe('true')
+      expect(api.fetchEventLeaderboard).toHaveBeenCalledWith('e-1', expect.anything())
     })
 
     it('honours a ?tournament= deep link from the event page', async () => {
@@ -72,12 +123,13 @@ describe('TournamentView', () => {
     it('ignores an unknown ?tournament= id', async () => {
       await mountView({ path: '/?tournament=missing' })
 
-      expect(api.fetchTournamentLeaderboard).toHaveBeenCalledWith('t-1', expect.anything())
+      expect(api.fetchTournamentLeaderboard).not.toHaveBeenCalled()
+      expect(api.fetchGlobalLeaderboard).toHaveBeenCalledTimes(1)
     })
 
     it('reloads the leaderboard when the class filter changes', async () => {
       // Arrange
-      const wrapper = await mountView()
+      const wrapper = await mountView({ path: '/?tournament=t-1' })
       api.fetchTournamentLeaderboard.mockClear()
 
       // Act
@@ -99,6 +151,7 @@ describe('TournamentView', () => {
       const openTab = wrapper
         .findAll('[data-test="tournament-tabs"] button')
         .find((tab) => tab.text().startsWith('Open'))
+      expect(openTab.attributes('aria-pressed')).toBe('false')
 
       // Act
       await openTab.trigger('click')
@@ -113,7 +166,8 @@ describe('TournamentView', () => {
     it('loads each dataset once on first render', async () => {
       await mountView()
 
-      expect(api.fetchTournamentLeaderboard).toHaveBeenCalledTimes(1)
+      expect(api.fetchGlobalLeaderboard).toHaveBeenCalledTimes(1)
+      expect(api.fetchTournamentLeaderboard).not.toHaveBeenCalled()
       expect(api.fetchMatches).toHaveBeenCalledTimes(1)
       expect(api.fetchClassBenchmarks).toHaveBeenCalledTimes(1)
     })
@@ -163,7 +217,7 @@ describe('TournamentView', () => {
     })
 
     it('shows leaderboard errors inside the leaderboard panel', async () => {
-      api.fetchTournamentLeaderboard.mockRejectedValue(new Error('timeout'))
+      api.fetchGlobalLeaderboard.mockRejectedValue(new Error('timeout'))
 
       const wrapper = await mountView()
 

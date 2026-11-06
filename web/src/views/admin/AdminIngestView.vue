@@ -4,17 +4,21 @@ import Panel from '../../components/ui/Panel.vue'
 import StateMessage from '../../components/ui/StateMessage.vue'
 import LogUploadForm from '../../components/admin/LogUploadForm.vue'
 import LogsTfIngestor from '../../components/admin/LogsTfIngestor.vue'
-import { fetchTournaments } from '../../api'
+import MatchaIngestor from '../../components/admin/MatchaIngestor.vue'
+import { fetchEvents, fetchTournaments } from '../../api'
+import { eventNamesById, formatTournamentLabel } from '../../utils/format'
 
 const tournaments = ref([])
+const eventNames = ref({})
 const selectedTournamentId = ref('')
 const loadError = ref('')
 
 async function loadTournaments() {
   loadError.value = ''
   try {
-    const rows = await fetchTournaments()
+    const [rows, events] = await Promise.all([fetchTournaments(), fetchEvents().catch(() => [])])
     tournaments.value = Array.isArray(rows) ? rows : []
+    eventNames.value = eventNamesById(events)
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : 'Failed to load tournaments'
   }
@@ -38,7 +42,7 @@ onMounted(loadTournaments)
             :key="tournament.tournament_id"
             :value="String(tournament.tournament_id)"
           >
-            {{ tournament.name }} ({{ tournament.slug }})
+            {{ formatTournamentLabel(tournament, eventNames) }} ({{ tournament.slug }})
           </option>
         </select>
       </label>
@@ -51,6 +55,10 @@ onMounted(loadTournaments)
 
     <Panel title="Ingest from logs.tf">
       <LogsTfIngestor :tournament-id="selectedTournamentId" />
+    </Panel>
+
+    <Panel title="Ingest from matcha.tf (api-consumer)">
+      <MatchaIngestor />
     </Panel>
   </div>
 </template>

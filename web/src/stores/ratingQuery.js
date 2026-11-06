@@ -1,13 +1,20 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
-import { fetchClassBenchmarks, fetchTournamentLeaderboard } from '../api'
+import {
+  fetchClassBenchmarks,
+  fetchEventLeaderboard,
+  fetchGlobalLeaderboard,
+  fetchTournamentLeaderboard,
+} from '../api'
 
 /**
- * Query-side store for precomputed ratings: tournament leaderboard + class benchmarks.
+ * Query-side store for ratings: the home-page leaderboard (one tournament, one
+ * event's tournaments, or everything) + class benchmarks.
  */
 export const useRatingQueryStore = defineStore('ratingQuery', () => {
   const leaderboard = ref([])
   const leaderboardTournamentId = ref('')
+  const leaderboardScope = ref('')
   const leaderboardClassFilter = ref('')
   const leaderboardLoading = ref(false)
   const leaderboardError = ref('')
@@ -16,19 +23,24 @@ export const useRatingQueryStore = defineStore('ratingQuery', () => {
   const benchmarksLoading = ref(false)
   const benchmarksError = ref('')
 
-  async function loadLeaderboard(tournamentId, { className = '', limit = 50, force = false } = {}) {
+  /**
+   * @param {string} tournamentId  tournament scope; empty = aggregate scope
+   * @param {{ eventId?: string, className?: string, limit?: number, force?: boolean }} [options]
+   *   `eventId` narrows the aggregate scope to one event; with neither id the
+   *   leaderboard covers every match.
+   */
+  async function loadLeaderboard(
+    tournamentId,
+    { eventId = '', className = '', limit = 50, force = false } = {},
+  ) {
     const id = String(tournamentId || '').trim()
-    if (!id) {
-      leaderboard.value = []
-      leaderboardTournamentId.value = ''
-      leaderboardError.value = ''
-      return []
-    }
+    const event = id ? '' : String(eventId || '').trim()
+    const scopeKey = id ? `t:${id}` : event ? `e:${event}` : 'all'
 
     const nextClass = String(className || '')
     if (
       !force
-      && leaderboardTournamentId.value === id
+      && leaderboardScope.value === scopeKey
       && leaderboardClassFilter.value === nextClass
       && leaderboard.value.length
     ) {
@@ -37,14 +49,21 @@ export const useRatingQueryStore = defineStore('ratingQuery', () => {
 
     leaderboardLoading.value = true
     leaderboardError.value = ''
+    leaderboardScope.value = scopeKey
     leaderboardTournamentId.value = id
     leaderboardClassFilter.value = nextClass
 
     try {
-      const rows = await fetchTournamentLeaderboard(id, {
-        className: nextClass || null,
-        limit,
-      })
+      const options = { className: nextClass || null, limit }
+      const rows = id
+        ? await fetchTournamentLeaderboard(id, options)
+        : event
+          ? await fetchEventLeaderboard(event, options)
+          : await fetchGlobalLeaderboard(options)
+      // A newer request may have changed the scope while this one was in flight.
+      if (leaderboardScope.value !== scopeKey || leaderboardClassFilter.value !== nextClass) {
+        return leaderboard.value
+      }
       leaderboard.value = Array.isArray(rows) ? rows : []
       return leaderboard.value
     } catch (err) {
@@ -79,6 +98,7 @@ export const useRatingQueryStore = defineStore('ratingQuery', () => {
   function invalidate() {
     leaderboard.value = []
     leaderboardTournamentId.value = ''
+    leaderboardScope.value = ''
     leaderboardClassFilter.value = ''
     benchmarks.value = []
   }

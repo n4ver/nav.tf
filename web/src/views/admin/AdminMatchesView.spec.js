@@ -7,6 +7,7 @@ import * as api from '../../api'
 
 vi.mock('../../api', () => ({
   assignMatchTournament: vi.fn(),
+  fetchEvents: vi.fn(),
   fetchMatches: vi.fn(),
   fetchTournaments: vi.fn(),
 }))
@@ -33,6 +34,7 @@ describe('AdminMatchesView', () => {
     vi.clearAllMocks()
     api.fetchMatches.mockResolvedValue([MATCH])
     api.fetchTournaments.mockResolvedValue(TOURNAMENTS)
+    api.fetchEvents.mockResolvedValue([])
   })
 
   it('lists projected matches with a tournament picker per row', async () => {
