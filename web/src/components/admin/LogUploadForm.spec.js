@@ -1,15 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { createRouter, createMemoryHistory } from 'vue-router'
 import LogUploadForm from './LogUploadForm.vue'
-import { useMatchCommandStore } from '../stores/matchCommand'
-import { useMatchQueryStore } from '../stores/matchQuery'
-import { usePlayerQueryStore } from '../stores/playerQuery'
-import { useRatingQueryStore } from '../stores/ratingQuery'
+import { useMatchQueryStore } from '../../stores/matchQuery'
+import { usePlayerQueryStore } from '../../stores/playerQuery'
+import { useRatingQueryStore } from '../../stores/ratingQuery'
+import * as api from '../../api'
 
-vi.mock('../api', () => ({
+vi.mock('../../api', () => ({
   uploadLog: vi.fn(),
+  ingestLogsTf: vi.fn(),
   fetchMatchDetail: vi.fn(),
 }))
 
@@ -18,6 +19,7 @@ describe('LogUploadForm', () => {
 
   beforeEach(async () => {
     setActivePinia(createPinia())
+    vi.clearAllMocks()
     router = createRouter({
       history: createMemoryHistory(),
       routes: [
@@ -51,14 +53,14 @@ describe('LogUploadForm', () => {
   })
 
   it('submits upload and navigates on success', async () => {
-    const commandStore = useMatchCommandStore()
     const queryStore = useMatchQueryStore()
     const playerStore = usePlayerQueryStore()
     const ratingStore = useRatingQueryStore()
 
-    commandStore.submitLogUpload = vi.fn().mockResolvedValue({
-      matchId: 'match-1',
-      detail: { match_summary: { ratings_ready: true }, players: [] },
+    api.uploadLog.mockResolvedValue({ match_id: 'match-1', status: 'accepted' })
+    api.fetchMatchDetail.mockResolvedValue({
+      match_summary: { ratings_ready: true },
+      players: [],
     })
     queryStore.invalidateMatch = vi.fn()
     queryStore.loadMatches = vi.fn().mockResolvedValue([])
@@ -70,12 +72,31 @@ describe('LogUploadForm', () => {
     const wrapper = mountForm()
     await wrapper.get('textarea').setValue('map_name=cp_process_final blu_score=1 red_score=0')
     await wrapper.get('form').trigger('submit.prevent')
-    await wrapper.vm.$nextTick()
+    await flushPromises()
 
-    expect(commandStore.submitLogUpload).toHaveBeenCalled()
+    expect(api.uploadLog).toHaveBeenCalled()
+    expect(api.fetchMatchDetail).toHaveBeenCalledWith('match-1')
     expect(pushSpy).toHaveBeenCalledWith({
       name: 'match-stats',
       params: { matchId: 'match-1' },
     })
+  })
+
+  it('includes tournament_id when the prop is set', async () => {
+    api.uploadLog.mockResolvedValue({ match_id: 'match-2', status: 'skipped' })
+    const wrapper = mount(LogUploadForm, {
+      props: { tournamentId: 'tourney-1' },
+      global: { plugins: [router] },
+    })
+    await wrapper.get('textarea').setValue('map_name=cp_process_final')
+    await wrapper.get('form').trigger('submit.prevent')
+    await flushPromises()
+
+    expect(api.uploadLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        log_data: 'map_name=cp_process_final',
+        tournament_id: 'tourney-1',
+      }),
+    )
   })
 })

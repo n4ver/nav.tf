@@ -69,10 +69,15 @@ export const useMatchQueryStore = defineStore('matchQuery', () => {
     }
 
     if (!force && detailCache.value.has(id)) {
-      matchDetail.value = detailCache.value.get(id)
-      matchDetailId.value = id
-      matchDetailError.value = ''
-      return matchDetail.value
+      const cached = detailCache.value.get(id)
+      const summary = cached?.match_summary
+      // Bypass stale cache entries from before scores/CDM fields were exposed.
+      if (summary && 'blu_score' in summary && 'red_score' in summary) {
+        matchDetail.value = cached
+        matchDetailId.value = id
+        matchDetailError.value = ''
+        return matchDetail.value
+      }
     }
 
     matchDetailLoading.value = true

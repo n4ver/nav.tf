@@ -1,11 +1,16 @@
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
+import PlayerCareerSummary from '../components/stats/PlayerCareerSummary.vue'
+import DataGrid from '../components/ui/DataGrid.vue'
+import Panel from '../components/ui/Panel.vue'
+import SkeletonBlock from '../components/ui/SkeletonBlock.vue'
+import StateMessage from '../components/ui/StateMessage.vue'
 import { usePlayerQueryStore } from '../stores/playerQuery'
-import PlayerStatsTable from '../components/PlayerStatsTable.vue'
+import { classesLabel, formatDate, formatNumber, matchPath } from '../utils/format'
 import { formatRating, ratingTone } from '../utils/rating'
-import { createSteamURL, convertToSteamID64 } from '../utils/steam'
+import { convertToSteamID64 } from '../utils/steam'
 
 const route = useRoute()
 const router = useRouter()
@@ -21,31 +26,76 @@ function decodeSteamId(value) {
 }
 
 const steamId = ref(decodeSteamId(route.params.steamId))
+const hasRouteSteamId = computed(() => Boolean(route.params.steamId))
 
-function formatNumber(value, digits = 2) {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'N/A'
-  }
-  return value.toFixed(digits)
-}
+const classColumns = [
+  { key: 'class_name', label: 'Class', sortable: true },
+  { key: 'matches_played', label: 'Maps', sortable: true, align: 'right', numeric: true, hideBelow: 'md' },
+  {
+    key: 'kd',
+    label: 'K-D',
+    sortable: true,
+    align: 'right',
+    numeric: true,
+    value: (row) => `${row.total_kills}-${row.total_deaths}`,
+    sortValue: (a, b) => (Number(a.total_kills) || 0) - (Number(b.total_kills) || 0),
+  },
+  { key: 'total_assists', label: 'A', sortable: true, align: 'right', numeric: true, hideBelow: 'md' },
+  {
+    key: 'average_damage_per_minute',
+    label: 'DPM',
+    sortable: true,
+    align: 'right',
+    numeric: true,
+    format: (v) => formatNumber(v, 1),
+  },
+  { key: 'total_healing_done', label: 'Heals', sortable: true, align: 'right', numeric: true, hideBelow: 'md' },
+  { key: 'average_rating', label: 'Rating', sortable: true, align: 'right', numeric: true },
+]
 
-function formatDate(value) {
-  if (!value) return '—'
-  try {
-    return new Date(value).toLocaleString()
-  } catch {
-    return String(value)
-  }
-}
-
-function classesLabel(classesPlayed) {
-  if (!Array.isArray(classesPlayed) || !classesPlayed.length) return '—'
-  return classesPlayed.join(', ')
-}
-
-function matchPath(matchId) {
-  return `/match/${encodeURIComponent(String(matchId))}`
-}
+const recentColumns = [
+  {
+    key: 'date_played',
+    label: 'Date',
+    sortable: true,
+    format: (v) => formatDate(v),
+  },
+  { key: 'map_name', label: 'Map', sortable: true, hideBelow: 'md' },
+  {
+    key: 'team',
+    hideBelow: 'md',
+    label: 'Team',
+    sortable: true,
+    format: (v) => String(v || '').toUpperCase(),
+  },
+  {
+    key: 'classes',
+    hideBelow: 'md',
+    label: 'Classes',
+    sortable: true,
+    value: (row) => classesLabel(row.classes_played),
+  },
+  {
+    key: 'kd',
+    label: 'K-D',
+    sortable: true,
+    align: 'right',
+    numeric: true,
+    value: (row) => `${row.kills}-${row.deaths}`,
+    sortValue: (a, b) => (Number(a.kills) || 0) - (Number(b.kills) || 0),
+  },
+  { key: 'assists', label: 'A', sortable: true, align: 'right', numeric: true, hideBelow: 'md' },
+  {
+    key: 'damage_per_minute',
+    hideBelow: 'md',
+    label: 'DPM',
+    sortable: true,
+    align: 'right',
+    numeric: true,
+    format: (v) => formatNumber(v, 1),
+  },
+  { key: 'rating', label: 'Rating', sortable: true, align: 'right', numeric: true },
+]
 
 async function submitAndLoad() {
   const raw = steamId.value.trim()
@@ -54,17 +104,20 @@ async function submitAndLoad() {
   }
   const query = convertToSteamID64(raw) || raw
 
-  await router.replace({
-    name: 'player-stats',
-    params: { steamId: query },
-  })
-  await playerQuery.loadPlayerStats(query, { force: true })
+  if (String(route.params.steamId || '') === query) {
+    // Same route: the param watcher will not fire, so refresh explicitly.
+    await playerQuery.loadPlayerStats(query, { force: true })
+    return
+  }
+  // The route watcher performs the load.
+  await router.push({ name: 'player-stats', params: { steamId: query } })
 }
 
 watch(
   () => route.params.steamId,
   async (nextSteamId) => {
     if (!nextSteamId) {
+      steamId.value = ''
       playerQuery.clear()
       return
     }
@@ -76,99 +129,109 @@ watch(
 onMounted(async () => {
   if (route.params.steamId) {
     await playerQuery.loadPlayerStats(decodeSteamId(route.params.steamId))
+  } else {
+    playerQuery.clear()
   }
 })
 </script>
 
 <template>
-  <div class="page-wrap">
-    <header class="hero">
-      <p class="eyebrow">TF2 analytics dashboard</p>
-      <h1>Player Statistics</h1>
-      <p>Lifetime aggregates, class splits, and ratings from the Query service.</p>
-    </header>
+  <div class="space-y-3">
+    <!-- Lookup bar: always available, compact -->
+    <form
+      class="flex flex-wrap items-center gap-2 rounded-sm border border-line bg-surface-800 px-3 py-2"
+      role="search"
+      @submit.prevent="submitAndLoad"
+    >
+      <label for="player-lookup" class="text-sm font-semibold text-ink">Player lookup</label>
+      <input
+        id="player-lookup"
+        v-model.trim="steamId"
+        placeholder="SteamID64, STEAM_0:1:123 or [U:1:123]"
+        required
+        class="field w-auto min-w-[16rem] flex-1 sm:flex-none"
+      />
+      <button type="submit" :disabled="loading" class="btn-primary">Look up</button>
+      <span class="text-xs text-ink-muted">Search by name with the bar at the top of the page.</span>
+    </form>
 
-    <main class="content-grid">
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Player lifetime stats</h2>
-          <form @submit.prevent="submitAndLoad">
-            <label>
-              SteamID
-              <input v-model.trim="steamId" placeholder="76561198… or STEAM_1:1:12345" required />
-            </label>
-            <button type="submit" :disabled="loading">Lookup</button>
-          </form>
-        </div>
+    <div v-if="loading" class="space-y-3" aria-busy="true" aria-label="Loading player stats">
+      <SkeletonBlock :rows="1" height="h-28" />
+      <SkeletonBlock :rows="6" height="h-8" />
+    </div>
 
-        <p v-if="error" class="error-msg">{{ error }}</p>
+    <StateMessage v-else-if="error" tone="error">{{ error }}</StateMessage>
 
-        <div v-if="loading" class="space-y-3" aria-busy="true" aria-label="Loading player stats">
-          <div class="h-8 w-48 animate-pulse rounded bg-gray-200" />
-          <div class="grid gap-2 sm:grid-cols-2">
-            <div v-for="n in 6" :key="n" class="h-10 animate-pulse rounded bg-gray-200" />
-          </div>
-        </div>
+    <Panel v-else-if="!hasRouteSteamId" title="Players">
+      <h1 class="sr-only">Players</h1>
+      <StateMessage>
+        Enter a SteamID above, or use the header search to find a player by name. Player names on
+        any leaderboard or scoreboard also link here.
+      </StateMessage>
+    </Panel>
 
-        <div v-else-if="stats">
-          <div class="mb-3">
-            <a
-              v-if="createSteamURL(stats.steam_id)"
-              class="inline-link"
-              :href="createSteamURL(stats.steam_id)"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Open Steam profile
-            </a>
-          </div>
-          <PlayerStatsTable :stats="stats" :format-number="formatNumber" />
+    <template v-else-if="stats">
+      <PlayerCareerSummary :stats="stats" />
 
-          <div class="mt-4" v-if="stats.recent_matches?.length">
-            <h3>Recent matches</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Map</th>
-                  <th>Team</th>
-                  <th>Classes</th>
-                  <th>K/D/A</th>
-                  <th>DPM</th>
-                  <th>Rating</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in stats.recent_matches" :key="row.match_id">
-                  <td>
-                    <RouterLink class="inline-link" :to="matchPath(row.match_id)">
-                      {{ formatDate(row.date_played) }}
-                    </RouterLink>
-                  </td>
-                  <td>{{ row.map_name }}</td>
-                  <td>{{ row.team }}</td>
-                  <td>{{ classesLabel(row.classes_played) }}</td>
-                  <td>{{ row.kills }}/{{ row.deaths }}/{{ row.assists }}</td>
-                  <td>{{ formatNumber(row.damage_per_minute, 1) }}</td>
-                  <td>
-                    <span class="rating-chip" :class="`tone-${ratingTone(row.rating)}`">
-                      {{ formatRating(row.rating) }}
-                    </span>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+      <StateMessage v-if="stats.matches_played === 0">
+        No projected stats yet for this SteamID. Upload a log that includes this player.
+      </StateMessage>
 
-          <p v-else-if="stats.matches_played > 0" class="status-msg mt-3">
-            No recent match history available yet.
-          </p>
+      <div v-else class="grid gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+        <Panel title="By class" flush>
+          <DataGrid
+            :rows="stats.class_breakdown || []"
+            :columns="classColumns"
+            row-key="class_name"
+            default-sort-key="matches_played"
+            empty-message="No class breakdown yet."
+            fit-container
+          >
+            <template #cell-class_name="{ value }">
+              <span class="font-semibold capitalize">{{ value }}</span>
+            </template>
+            <template #cell-average_rating="{ row }">
+              <span class="rating-chip" :class="`tone-${ratingTone(row.average_rating)}`">
+                {{ formatRating(row.average_rating, 2) }}
+              </span>
+            </template>
+          </DataGrid>
+        </Panel>
 
-          <p v-if="stats.matches_played === 0" class="status-msg mt-3">
-            No projected stats yet for this SteamID. Upload a log that includes this player.
-          </p>
-        </div>
-      </section>
-    </main>
+        <Panel title="Recent matches" flush>
+          <DataGrid
+            :rows="stats.recent_matches || []"
+            :columns="recentColumns"
+            row-key="match_id"
+            default-sort-key="date_played"
+            empty-message="No recent match history available yet."
+          >
+            <template #cell-date_played="{ row }">
+              <RouterLink class="data-link text-blu" :to="matchPath(row.match_id)">
+                {{ formatDate(row.date_played) }}
+              </RouterLink>
+            </template>
+            <template #cell-team="{ value }">
+              <span
+                class="font-bold uppercase"
+                :class="{
+                  'text-blu': String(value).toLowerCase() === 'blu',
+                  'text-red': String(value).toLowerCase() === 'red',
+                }"
+              >
+                {{ String(value || '').toUpperCase() }}
+              </span>
+            </template>
+            <template #cell-rating="{ row }">
+              <span class="rating-chip" :class="`tone-${ratingTone(row.rating)}`">
+                {{ formatRating(row.rating, 2) }}
+              </span>
+            </template>
+          </DataGrid>
+        </Panel>
+      </div>
+    </template>
+
+    <StateMessage v-else>No player data loaded.</StateMessage>
   </div>
 </template>

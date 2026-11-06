@@ -2,8 +2,14 @@ import { createRouter, createWebHistory } from 'vue-router'
 import TournamentView from './views/TournamentView.vue'
 import MatchStatsView from './views/MatchStatsView.vue'
 import PlayerStatsView from './views/PlayerStatsView.vue'
+import EventView from './views/EventView.vue'
 import AuthCallbackView from './views/AuthCallbackView.vue'
-import AdminDashboardView from './views/AdminDashboardView.vue'
+import AdminShell from './layouts/AdminShell.vue'
+import AdminIngestView from './views/admin/AdminIngestView.vue'
+import AdminEventsView from './views/admin/AdminEventsView.vue'
+import AdminTournamentsView from './views/admin/AdminTournamentsView.vue'
+import AdminMatchesView from './views/admin/AdminMatchesView.vue'
+import AdminPlayersView from './views/admin/AdminPlayersView.vue'
 import { useAuthStore } from './stores/auth'
 
 const router = createRouter({
@@ -13,6 +19,12 @@ const router = createRouter({
       path: '/',
       name: 'tournament',
       component: TournamentView,
+    },
+    {
+      path: '/event/:eventId?',
+      name: 'event',
+      component: EventView,
+      props: true,
     },
     {
       path: '/match/:matchId?',
@@ -38,15 +50,33 @@ const router = createRouter({
       meta: { public: true },
     },
     {
-      path: '/admin/dashboard',
-      name: 'admin-dashboard',
-      component: AdminDashboardView,
+      path: '/admin',
+      component: AdminShell,
       meta: { requiresAuth: true, requiresAdmin: true },
+      children: [
+        { path: '', redirect: { name: 'admin-ingest' } },
+        { path: 'ingest', name: 'admin-ingest', component: AdminIngestView },
+        { path: 'events', name: 'admin-events', component: AdminEventsView },
+        { path: 'tournaments', name: 'admin-tournaments', component: AdminTournamentsView },
+        { path: 'matches', name: 'admin-matches', component: AdminMatchesView },
+        { path: 'players', name: 'admin-players', component: AdminPlayersView },
+      ],
+    },
+    // Legacy bookmark for the pre-split single-page admin dashboard.
+    {
+      path: '/admin/dashboard',
+      redirect: { name: 'admin-ingest' },
     },
   ],
 })
 
-router.beforeEach(async (to) => {
+/**
+ * Global navigation guard: restores the session from a stored token, sends
+ * anonymous users to Steam login for protected routes, and keeps non-admins
+ * out of `/admin/*`.
+ * @param {import('vue-router').RouteLocationNormalized} to
+ */
+export async function authGuard(to) {
   const auth = useAuthStore()
   if (!auth.user && auth.token) {
     await auth.bootstrap()
@@ -62,6 +92,8 @@ router.beforeEach(async (to) => {
   }
 
   return true
-})
+}
+
+router.beforeEach(authGuard)
 
 export default router

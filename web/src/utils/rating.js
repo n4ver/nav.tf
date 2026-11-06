@@ -7,6 +7,8 @@ export const RATING_MAX = 2
 export const RATING_NEUTRAL = 1
 
 export function toRating(value) {
+  // Number(null) and Number('') are 0; a missing rating must stay missing.
+  if (value == null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }

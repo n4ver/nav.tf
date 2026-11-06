@@ -5,9 +5,9 @@
 
 import axios from 'axios'
 
-const commandBaseUrl = (import.meta.env.VITE_COMMAND_BASE_URL || '/api/v1/commands').replace(/\/$/, '')
-const queryBaseUrl = (import.meta.env.VITE_QUERY_BASE_URL || '/api/v1/queries').replace(/\/$/, '')
-const authBaseUrl = (import.meta.env.VITE_AUTH_BASE_URL || '/api/v1/auth').replace(/\/$/, '')
+const commandBaseUrl = (import.meta.env.VITE_COMMAND_BASE_URL || '/api/command').replace(/\/$/, '')
+const queryBaseUrl = (import.meta.env.VITE_QUERY_BASE_URL || '/api/query').replace(/\/$/, '')
+const authBaseUrl = (import.meta.env.VITE_AUTH_BASE_URL || '/api/auth').replace(/\/$/, '')
 
 const TOKEN_KEY = 'tf2_auth_token'
 
@@ -115,7 +115,7 @@ export async function uploadLog(payload) {
 /**
  * Ingest a match by fetching JSON from logs.tf. Admin-only.
  * Returns 202 Accepted with { match_id, log_id, status }.
- * @param {{ logstf_id: number }} payload
+ * @param {{ logstf_id: number, tournament_id?: string }} payload
  */
 export async function ingestLogsTf(payload) {
   return requestJson(`${commandBaseUrl}/logs/ingest-logstf`, {
@@ -145,19 +145,56 @@ export async function updateTournament(tournamentId, payload) {
   })
 }
 
+export async function createEvent(payload) {
+  return requestJson(`${commandBaseUrl}/events`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function updateEvent(eventId, payload) {
+  return requestJson(`${commandBaseUrl}/events/${encodeURIComponent(eventId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function linkTournamentToEvent(tournamentId, payload) {
+  return requestJson(
+    `${commandBaseUrl}/tournaments/${encodeURIComponent(tournamentId)}/event`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function assignMatchTournament(matchId, payload) {
+  return requestJson(
+    `${commandBaseUrl}/matches/${encodeURIComponent(matchId)}/tournament`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
 // ── Query service (reads) ──────────────────────────────────────────────────
 
 /**
  * Paginated match list (materialized MatchSummaryView rows).
  * Backend uses skip/limit; returns an array (no total count).
  */
-export async function fetchMatches({ skip = 0, limit = 20, tournamentId = null } = {}) {
+export async function fetchMatches({ skip = 0, limit = 20, tournamentId = null, eventId = null } = {}) {
   const params = new URLSearchParams({
     skip: String(skip),
     limit: String(limit),
   })
   if (tournamentId) {
     params.set('tournament_id', String(tournamentId))
+  }
+  if (eventId) {
+    params.set('event_id', String(eventId))
   }
   return requestJson(`${queryBaseUrl}/matches?${params}`)
 }
@@ -181,6 +218,24 @@ export async function fetchPlayerStats(steamId) {
  */
 export async function fetchTournaments() {
   return requestJson(`${queryBaseUrl}/tournaments`)
+}
+
+export async function fetchEvents() {
+  return requestJson(`${queryBaseUrl}/events`)
+}
+
+export async function fetchEventDetail(eventId) {
+  return requestJson(`${queryBaseUrl}/events/${encodeURIComponent(eventId)}`)
+}
+
+export async function fetchEventLeaderboard(eventId, { className = null, limit = 50 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (className) {
+    params.set('class_name', String(className))
+  }
+  return requestJson(
+    `${queryBaseUrl}/events/${encodeURIComponent(eventId)}/leaderboard?${params}`,
+  )
 }
 
 /**
