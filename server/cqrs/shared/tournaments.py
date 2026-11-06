@@ -67,6 +67,20 @@ def build_tournament_command(
     )
 
 
+def builtin_tournament_command(tournament_id: str) -> TournamentCommandModel | None:
+    """Definition of a built-in tournament (catalog bracket or the default one) by id.
+
+    Ingest attaches matches to these without creating a write-side record, so the
+    read model lists them even though the command side has never stored them.
+    """
+    for catalog_id in TOURNAMENT_CATALOG:
+        if str(stable_tournament_uuid(catalog_id)) == tournament_id:
+            return build_tournament_command(catalog_id)
+    if str(stable_tournament_uuid_from_slug(DEFAULT_TOURNAMENT_SLUG)) == tournament_id:
+        return build_tournament_command_from_slug(DEFAULT_TOURNAMENT_SLUG)
+    return None
+
+
 def build_tournament_command_from_slug(
     slug: str,
     name: str | None = None,

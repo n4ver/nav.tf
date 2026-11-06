@@ -46,6 +46,7 @@ from ...shared.timeutils import ensure_utc_naive, utcnow
 from ...shared.tournaments import (
     build_tournament_command,
     build_tournament_command_from_slug,
+    builtin_tournament_command,
     stable_tournament_uuid_from_slug,
 )
 from .logs_tf_parser import parse_logs_tf
@@ -111,6 +112,48 @@ class CommandService:
         await self._require_event(resolved)
         return resolved
 
+    async def _get_tournament(
+        self, tournament_id: str, *, actor_id: str
+    ) -> TournamentRecord | None:
+        """Load a write-side tournament, materializing a built-in one on first use.
+
+        Catalog brackets and the default tournament reach the read model through
+        ingest without a write-side record; create it so admins can manage them.
+        """
+        record = await self.session.get(TournamentRecord, tournament_id)
+        if record is not None:
+            return record
+        builtin = builtin_tournament_command(tournament_id)
+        if builtin is None:
+            return None
+        slug_taken = (
+            (
+                await self.session.execute(
+                    select(TournamentRecord).where(TournamentRecord.slug == builtin.slug)
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if slug_taken is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Tournament slug already exists: {builtin.slug}",
+            )
+        now = utcnow()
+        record = TournamentRecord(
+            tournament_id=tournament_id,
+            name=builtin.name,
+            slug=builtin.slug,
+            created_by=actor_id,
+            updated_by=actor_id,
+            created_at=now,
+            updated_at=now,
+        )
+        self.session.add(record)
+        await self.session.flush()
+        return record
+
     async def _resolve_ingest_tournament(
         self,
         tournament_id: Any,
@@ -124,7 +167,10 @@ class CommandService:
             )
         record = await self.session.get(TournamentRecord, str(tournament_id))
         if record is None:
-            raise HTTPException(status_code=404, detail="Tournament not found")
+            builtin = builtin_tournament_command(str(tournament_id))
+            if builtin is None:
+                raise HTTPException(status_code=404, detail="Tournament not found")
+            return builtin.model_copy(update={"start_date": start_date})
         return TournamentCommandModel(
             tournament_id=record.tournament_id,  # type: ignore[arg-type]
             name=record.name,
@@ -238,6 +284,17 @@ class CommandService:
 
         parsed_match = parse_logs_tf(log_data, payload.log_id)
         tournament = build_tournament_command(payload.tournament_id, payload.timestamp)
+        record = await self.session.get(TournamentRecord, str(tournament.tournament_id))
+        if record is not None:
+            # Carry the admin-managed name and event link; the bare catalog entry has
+            # event_id=None, which the read model would apply as an unlink.
+            tournament = TournamentCommandModel(
+                tournament_id=record.tournament_id,  # type: ignore[arg-type]
+                name=record.name,
+                slug=record.slug,
+                start_date=payload.timestamp,
+                event_id=record.event_id,  # type: ignore[arg-type]
+            )
         return await self._persist_and_publish(
             parsed_match=parsed_match,
             raw_log=f"logs.tf:{payload.log_id}",
@@ -684,7 +741,7 @@ class CommandService:
         *,
         actor_id: str,
     ) -> dict[str, object]:
-        tournament = await self.session.get(TournamentRecord, tournament_id)
+        tournament = await self._get_tournament(tournament_id, actor_id=actor_id)
         if tournament is None:
             raise HTTPException(status_code=404, detail="Tournament not found")
 
@@ -713,7 +770,7 @@ class CommandService:
         actor_id: str,
     ) -> dict[str, object]:
         tournament_id = str(command.tournament_id)
-        tournament = await self.session.get(TournamentRecord, tournament_id)
+        tournament = await self._get_tournament(tournament_id, actor_id=actor_id)
         if tournament is None:
             raise HTTPException(status_code=404, detail="Tournament not found")
 
