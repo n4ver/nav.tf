@@ -15,7 +15,7 @@ This document describes the system architecture for TF2 Analytics: a platform th
 ## System context
 
 ```text
-                         ┌─────────────────────────────────────────────────────────┐
+                         ┌────────────────────────────────────────────────────────────┐
                          │                    External sources                        │
                          │   logs.tf API          matcha.tf API         Steam OpenID  │
                          └────────────┬───────────────────┬─────────────────┬─────────┘
@@ -25,17 +25,17 @@ This document describes the system architecture for TF2 Analytics: a platform th
 │  Vue Web     │◄───────────────────►│   Command    │───────────►│   RabbitMQ   │
 │  :5173       │                     │   :8001      │            │  tf2-events  │
 └──────┬───────┘                     └──────┬───────┘            └──────┬───────┘
-       │ HTTP read                        │ write DB                     │ consume
-       ▼                                  ▼                              ▼
+       │ HTTP read                          │ write DB                  │ consume
+       ▼                                    ▼                           ▼
 ┌──────────────┐                     ┌──────────────┐            ┌──────────────┐
 │   Query      │◄────────────────────│ cqrs_command │            │   Query      │
 │   :8002      │      read DB        │  (Postgres)  │            │   consumer   │
 └──────────────┘                     └──────────────┘            └──────┬───────┘
-       ▲                                                                  │
-       │ read DB                                                          ▼
+       ▲                                                                │
+       │ read DB                                                        ▼
 ┌──────────────┐                                                   ┌──────────────┐
 │ cqrs_query   │◄──────────────────────────────────────────────────│ cqrs_query   │
-│  (Postgres)  │         projection upserts                      │  (Postgres)  │
+│  (Postgres)  │         projection upserts                        │  (Postgres)  │
 └──────────────┘                                                   └──────────────┘
 
        ┌──────────────┐
