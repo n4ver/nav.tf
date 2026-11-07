@@ -35,6 +35,7 @@ export const useMatchQueryStore = defineStore('matchQuery', () => {
     page = matchesPage.value,
     pageSize = matchesPageSize.value,
     tournamentId = null,
+    eventId = null,
   } = {}) {
     const safePage = Math.max(1, Number(page) || 1)
     const safeSize = Math.min(100, Math.max(1, Number(pageSize) || 20))
@@ -44,7 +45,7 @@ export const useMatchQueryStore = defineStore('matchQuery', () => {
     matchesError.value = ''
 
     try {
-      const rows = await fetchMatches({ skip, limit: safeSize, tournamentId })
+      const rows = await fetchMatches({ skip, limit: safeSize, tournamentId, eventId })
       const list = Array.isArray(rows) ? rows : []
       matches.value = list
       matchesPage.value = safePage

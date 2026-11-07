@@ -179,6 +179,36 @@ export async function assignMatchTournament(matchId, payload) {
   )
 }
 
+// ── External sources via api-consumer (admin; proxied by the command service) ──
+
+/** { configured, reachable, source_site } */
+export async function fetchMatchaSourceStatus() {
+  return requestJson(`${commandBaseUrl}/sources/matcha/status`)
+}
+
+/**
+ * Ingest one matcha.tf match (all its map logs) through the api-consumer.
+ * Returns 202 with { accepted, skipped, noLogs, published[] }.
+ * @param {{ match_id: number }} payload
+ */
+export async function ingestMatchaMatch(payload) {
+  return requestJson(`${commandBaseUrl}/sources/matcha/matches`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+/**
+ * Run one poll of the api-consumer's configured matcha.tf league/division.
+ * @param {{ reset?: boolean }} [payload]
+ */
+export async function pollMatcha(payload = {}) {
+  return requestJson(`${commandBaseUrl}/sources/matcha/poll`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
 // ── Query service (reads) ──────────────────────────────────────────────────
 
 /**
@@ -236,6 +266,17 @@ export async function fetchEventLeaderboard(eventId, { className = null, limit =
   return requestJson(
     `${queryBaseUrl}/events/${encodeURIComponent(eventId)}/leaderboard?${params}`,
   )
+}
+
+/**
+ * Leaderboard across every match (LeaderboardEntryView[]).
+ */
+export async function fetchGlobalLeaderboard({ className = null, limit = 50 } = {}) {
+  const params = new URLSearchParams({ limit: String(limit) })
+  if (className) {
+    params.set('class_name', String(className))
+  }
+  return requestJson(`${queryBaseUrl}/leaderboard?${params}`)
 }
 
 /**

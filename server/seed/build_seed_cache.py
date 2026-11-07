@@ -1,4 +1,4 @@
-"""Build a cached JSON seed file from dev-setup/seed/invite.txt log IDs.
+"""Build a cached JSON seed file from seed/invite.txt log IDs.
 
 Fetches each log payload from logs.tf and writes server/data/seed_logs_cache.json
 for offline database seeding without repeated API calls.
@@ -6,13 +6,13 @@ for offline database seeding without repeated API calls.
 After building the cache, seed the CQRS Postgres databases:
 
     docker compose up -d db rabbitmq command-service query-service
-    python dev-setup/seed/seed_cqrs.py --http
+    python seed/seed_cqrs.py --http
     # or: docker compose --profile seed run --rm seed
 
 Usage:
     cd server
-    python dev-setup/seed/build_seed_cache.py
-    python dev-setup/seed/build_seed_cache.py --skip-fetch
+    python seed/build_seed_cache.py
+    python seed/build_seed_cache.py --skip-fetch
 """
 
 from __future__ import annotations
@@ -26,9 +26,9 @@ from typing import Any
 
 import httpx
 
-DEV_SETUP_DIR = Path(__file__).resolve().parent
-SERVER_ROOT = DEV_SETUP_DIR.parents[1]
-INVITE_FILE = DEV_SETUP_DIR / "invite.txt"
+SEED_DIR = Path(__file__).resolve().parent
+SERVER_ROOT = SEED_DIR.parent
+INVITE_FILE = SEED_DIR / "invite.txt"
 CACHE_FILE = SERVER_ROOT / "data" / "seed_logs_cache.json"
 LOGS_TF_API = "https://logs.tf/json"
 CACHE_VERSION = 1

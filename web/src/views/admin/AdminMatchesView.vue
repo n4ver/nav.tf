@@ -3,12 +3,14 @@ import { onMounted, ref } from 'vue'
 import Panel from '../../components/ui/Panel.vue'
 import StateMessage from '../../components/ui/StateMessage.vue'
 import SkeletonBlock from '../../components/ui/SkeletonBlock.vue'
-import { assignMatchTournament, fetchMatches, fetchTournaments } from '../../api'
+import { assignMatchTournament, fetchEvents, fetchMatches, fetchTournaments } from '../../api'
+import { eventNamesById, formatTournamentLabel } from '../../utils/format'
 import { pollUntil } from '../../utils/poll'
 
 
 const matches = ref([])
 const tournaments = ref([])
+const eventNames = ref({})
 const loading = ref(false)
 const error = ref('')
 const status = ref('')
@@ -17,17 +19,19 @@ const savingId = ref('')
 
 function tournamentLabel(id) {
   const match = tournaments.value.find((row) => String(row.tournament_id) === String(id))
-  return match ? match.name : id ? String(id).slice(0, 8) : 'Unassigned'
+  return match ? formatTournamentLabel(match, eventNames.value) : id ? String(id).slice(0, 8) : 'Unassigned'
 }
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [matchRows, tournamentRows] = await Promise.all([
+    const [matchRows, tournamentRows, eventRows] = await Promise.all([
       fetchMatches({ skip: 0, limit: 50 }),
       fetchTournaments(),
+      fetchEvents().catch(() => []),
     ])
+    eventNames.value = eventNamesById(eventRows)
     matches.value = Array.isArray(matchRows) ? matchRows : []
     tournaments.value = Array.isArray(tournamentRows) ? tournamentRows : []
     const next = {}
@@ -114,7 +118,7 @@ onMounted(load)
                   :key="tournament.tournament_id"
                   :value="String(tournament.tournament_id)"
                 >
-                  {{ tournament.name }}
+                  {{ formatTournamentLabel(tournament, eventNames) }}
                 </option>
               </select>
             </td>

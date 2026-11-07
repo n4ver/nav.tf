@@ -42,6 +42,17 @@ describe('AppTopNav', () => {
     wrapper?.unmount()
   })
 
+  describe('brand', () => {
+    it('shows the nav.tf wordmark without an icon', async () => {
+      const { wrapper } = await mountNav()
+
+      const brand = wrapper.get('[data-test="brand"]')
+      expect(brand.text()).toBe('nav.tf')
+      expect(brand.attributes('aria-label')).toBe('nav.tf home')
+      expect(brand.findAll('span')).toHaveLength(1)
+    })
+  })
+
   describe('active link', () => {
     it('marks only the current section with aria-current="page"', async () => {
       // Arrange / Act

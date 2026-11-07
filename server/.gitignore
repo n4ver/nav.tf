@@ -38,8 +38,6 @@ pip-delete-this-directory.txt
 
 # Unit test / coverage reports
 htmlcov/
-dev-setup/python/htmlcov/
-dev-setup/python/coverage.xml
 .tox/
 .nox/
 .coverage
@@ -159,8 +157,6 @@ activemq-data/
 env/
 venv/
 ENV/
-# dev-setup/env holds the committed .env.example template
-!dev-setup/env/
 env.bak/
 venv.bak/
 

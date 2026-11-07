@@ -87,20 +87,18 @@ web/
 **With Docker (from repo root):**
 
 ```bash
-cd server
 docker compose up -d --build
-python dev-setup/seed/seed_cqrs.py --http
+docker compose --profile seed run --rm seed
 # Web runs at http://localhost:5173 via the web container
 ```
 
 **Local Vite dev server:**
 
 ```bash
-cd server
-docker compose up -d db rabbitmq command-service query-service
-python dev-setup/seed/seed_cqrs.py --http
+docker compose up -d db rabbitmq command-service query-service   # repo root
+(cd server && python seed/seed_cqrs.py --http)
 
-cd ../web
+cd web
 npm install
 npm run dev
 ```

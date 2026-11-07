@@ -13,7 +13,6 @@ from sqlalchemy import text
 
 SERVER_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SERVER_ROOT))
-sys.path.insert(0, str(SERVER_ROOT / "dev-setup"))
 
 from postgres import (
     create_postgres_engine,

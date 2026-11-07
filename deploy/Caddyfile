@@ -1,5 +1,5 @@
 # Production edge for nav.tf: automatic HTTPS, the built SPA, and the API
-# gateway. Path mapping mirrors server/dev-setup/docker/nginx/nginx.conf.
+# gateway. Path mapping mirrors dev/nginx.conf.
 #
 # Env:
 #   DOMAIN      public hostname (e.g. nav.example.com). "localhost" uses Caddy's

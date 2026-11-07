@@ -8,6 +8,7 @@ import { createTestRouter } from '../../test/helpers'
 import * as api from '../../api'
 
 vi.mock('../../api', () => ({
+  fetchEvents: vi.fn(),
   fetchTournaments: vi.fn(),
 }))
 
@@ -17,7 +18,7 @@ async function mountView() {
   const wrapper = mount(AdminIngestView, {
     global: {
       plugins: [router, createTestingPinia({ createSpy: vi.fn })],
-      stubs: { LogUploadForm: true, LogsTfIngestor: true },
+      stubs: { LogUploadForm: true, LogsTfIngestor: true, MatchaIngestor: true },
     },
   })
   await flushPromises()
@@ -27,6 +28,7 @@ async function mountView() {
 describe('AdminIngestView', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    api.fetchEvents.mockResolvedValue([])
   })
 
   it('lists tournaments as ingest targets with a default option', async () => {
@@ -42,6 +44,27 @@ describe('AdminIngestView', () => {
     // Assert
     const options = wrapper.findAll('option').map((option) => option.text())
     expect(options).toEqual(['Default tournament', 'Invite (invite)', 'Open (open)'])
+  })
+
+  it('prefixes tournaments with their event name', async () => {
+    api.fetchEvents.mockResolvedValue([{ event_id: 'e-1', name: 'Season One' }])
+    api.fetchTournaments.mockResolvedValue([
+      { tournament_id: 't-1', name: 'Invite', slug: 'invite', event_id: 'e-1' },
+    ])
+
+    const wrapper = await mountView()
+
+    const options = wrapper.findAll('option').map((option) => option.text())
+    expect(options).toEqual(['Default tournament', 'Season One - Invite (invite)'])
+  })
+
+  it('offers matcha.tf ingest through the api-consumer', async () => {
+    api.fetchTournaments.mockResolvedValue([])
+
+    const wrapper = await mountView()
+
+    expect(wrapper.findComponent({ name: 'MatchaIngestor' }).exists()).toBe(true)
+    expect(wrapper.text()).toContain('Ingest from matcha.tf (api-consumer)')
   })
 
   it('passes the selected tournament to both ingest forms', async () => {

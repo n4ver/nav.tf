@@ -90,6 +90,9 @@ services:
       STEAM_API_KEY: ${STEAM_API_KEY:-}
       BOOTSTRAP_ADMIN_STEAM_IDS: ${BOOTSTRAP_ADMIN_STEAM_IDS:-}
       SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+      # Admin → Ingest → matcha.tf: forwarded server-side so the key never reaches browsers.
+      API_CONSUMER_URL: http://api-consumer:8010
+      API_CONSUMER_API_KEY: ${WEBHOOK_API_KEY:-}
     depends_on:
       db-init:
         condition: service_completed_successfully
@@ -187,7 +190,7 @@ services:
     # One-shot sample data load: `deploy.sh seed` (never started by `up`).
     image: *server-image
     profiles: ["seed"]
-    command: ["python", "dev-setup/seed/seed_cqrs.py", "--http", "--no-fallback"]
+    command: ["python", "seed/seed_cqrs.py", "--http", "--no-fallback"]
     environment:
       <<: *service-env
       COMMAND_SERVICE_URL: http://command-service:8001

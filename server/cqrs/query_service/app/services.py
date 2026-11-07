@@ -1553,6 +1553,46 @@ class ProjectionService:
             entry.display_name = names.get(entry.steam_id) or entry.display_name
         return entries[: max(1, min(limit, 200))]
 
+    async def get_global_leaderboard(
+        self,
+        class_name: str | None = None,
+        limit: int = 50,
+    ) -> list[LeaderboardEntryView]:
+        """Leaderboard across every tournament (the "all events, all matches" scope)."""
+        entries = await self._compute_leaderboard_entries(
+            await self._all_tournament_ids(), class_name=class_name
+        )
+        entries = entries[: max(1, min(limit, 200))]
+        names = await self._display_names([entry.steam_id for entry in entries])
+        for entry in entries:
+            entry.display_name = names.get(entry.steam_id) or entry.display_name
+        return entries
+
+    async def _all_tournament_ids(self) -> set[str]:
+        class_ids = (
+            (
+                await self.session.execute(
+                    select(PlayerMatchClassStatsProjection.tournament_id)
+                    .where(PlayerMatchClassStatsProjection.tournament_id.is_not(None))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        match_ids = (
+            (
+                await self.session.execute(
+                    select(MatchSummaryProjection.tournament_id)
+                    .where(MatchSummaryProjection.tournament_id.is_not(None))
+                    .distinct()
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return {str(tid) for tid in list(class_ids) + list(match_ids) if tid}
+
     async def get_tournament_leaderboard(
         self,
         tournament_id: str,
@@ -1586,32 +1626,7 @@ class ProjectionService:
         ]
 
     async def refresh_all_tournament_leaderboards(self) -> None:
-        tournament_ids = (
-            (
-                await self.session.execute(
-                    select(PlayerMatchClassStatsProjection.tournament_id)
-                    .where(PlayerMatchClassStatsProjection.tournament_id.is_not(None))
-                    .distinct()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        match_tournament_ids = (
-            (
-                await self.session.execute(
-                    select(MatchSummaryProjection.tournament_id)
-                    .where(MatchSummaryProjection.tournament_id.is_not(None))
-                    .distinct()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        ids = {
-            str(tid) for tid in list(tournament_ids) + list(match_tournament_ids) if tid
-        }
-        for tournament_id in ids:
+        for tournament_id in await self._all_tournament_ids():
             await self.refresh_tournament_leaderboard(tournament_id)
 
     async def refresh_tournament_leaderboard(self, tournament_id: str) -> None:

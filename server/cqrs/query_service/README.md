@@ -72,17 +72,17 @@ MatchParsed
 
 ## Run
 
-**Docker:**
+**Docker** (from the repository root):
 
 ```bash
-cd server
 docker compose up -d query-service
 ```
 
-**Local:**
+**Local** (Postgres and RabbitMQ from the root `compose.yaml`, service from `server/`):
 
 ```bash
-docker compose up -d db rabbitmq
+docker compose up -d db db-init rabbitmq
+cd server
 uvicorn cqrs.query_service.app.main:app --host 127.0.0.1 --port 8002 --reload
 ```
 
@@ -110,7 +110,7 @@ Ratings are computed during projection rebuild, not on HTTP request:
 
 1. `PlayerMatchClassStatsProjection` stores raw per-class stats from each match
 2. `ProjectionService.rebuild_ratings()` recalculates benchmarks in `class_rating_benchmark_view`
-3. `RatingService` (`cqrs/shared/rating.py`) scores each row
+3. `RatingService` (`app/rating/service.py`) scores each row
 4. Leaderboard snapshots are refreshed after `RatingsRebuilt`
 
 After seeding, allow a few seconds for the consumer to process events before querying.

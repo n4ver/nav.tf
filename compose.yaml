@@ -1,13 +1,25 @@
+# Local development stack. Run from the repository root:
+#
+#   cp .env.example .env
+#   docker compose up -d --build                      # everything below except opt-in profiles
+#   docker compose --profile consumer up -d api-consumer
+#   docker compose --profile seed run --rm seed
+#
+# Production uses deploy/compose.prod.yml (see deploy/README.md). Both build the
+# backend from the same image, deploy/docker/server.Dockerfile.
+name: navtf
+
+x-server-build: &server-build
+  context: .
+  dockerfile: deploy/docker/server.Dockerfile
+
 services:
   rabbitmq:
-    container_name: rabbitmq
     image: "rabbitmq:3.11.8-management-alpine"
     ports:
       - "15672:15672"
       - "5672:5672"
     hostname: rabbitmq
-    networks:
-      - app_network
     restart: always
 
   db:
@@ -18,17 +30,13 @@ services:
       POSTGRES_DB: cqrs_command
     ports:
       - "5432:5432"
-    volumes:
-      - ./postgres/init-cqrs-databases.sql:/docker-entrypoint-initdb.d/01-init-cqrs.sql:ro
-      - ../../cqrs/tests/postgres/init-test-databases.sql:/docker-entrypoint-initdb.d/02-init-test.sql:ro
-    networks:
-      - app_network
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d cqrs_command"]
       interval: 5s
       timeout: 5s
       retries: 10
 
+  # Idempotently creates cqrs_query and the two pytest databases.
   db-init:
     image: postgres:15
     depends_on:
@@ -36,55 +44,16 @@ services:
         condition: service_healthy
     environment:
       POSTGRES_USER: user
-      POSTGRES_PASSWORD: password
       POSTGRES_DB: cqrs_command
       PGPASSWORD: password
     volumes:
-      - ./postgres/ensure-cqrs-databases.sh:/ensure-cqrs-databases.sh:ro
-      - ../../cqrs/tests/postgres/ensure-test-databases.sh:/ensure-test-databases.sh:ro
+      - ./deploy/postgres/ensure-cqrs-databases.sh:/ensure-cqrs-databases.sh:ro
+      - ./server/cqrs/tests/ensure-test-databases.sh:/ensure-test-databases.sh:ro
     entrypoint: ["bash", "-c", "bash /ensure-cqrs-databases.sh && bash /ensure-test-databases.sh"]
-    networks:
-      - app_network
     restart: "no"
 
-  seed:
-    build:
-      context: ../..
-      dockerfile: dev-setup/docker/Dockerfile
-    container_name: seed
-    depends_on:
-      db-init:
-        condition: service_completed_successfully
-      rabbitmq:
-        condition: service_started
-      command-service:
-        condition: service_started
-      query-service:
-        condition: service_started
-    environment:
-      COMMAND_SERVICE_URL: http://command-service:8001
-      QUERY_SERVICE_URL: http://query-service:8002
-      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_command
-      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_query
-      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
-      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      JWT_SECRET: ${JWT_SECRET:-dev-insecure-jwt-secret-change-me}
-      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-dev-seed-service-token}
-    working_dir: /app
-    command: ["python", "dev-setup/seed/seed_cqrs.py", "--http", "--no-fallback"]
-    volumes:
-      - ../../data:/app/data
-      - ../../dev-setup/seed:/app/dev-setup/seed:ro
-    networks:
-      - app_network
-    profiles:
-      - seed
-
   command-service:
-    build:
-      context: ../..
-      dockerfile: dev-setup/docker/Dockerfile
-    container_name: command
+    build: *server-build
     depends_on:
       db:
         condition: service_healthy
@@ -98,26 +67,24 @@ services:
       CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_command
       SEED_CACHE_PATH: /app/data/seed_logs_cache.json
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
-      JWT_SECRET: ${JWT_SECRET}
-      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN}
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-jwt-secret-change-me}
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-dev-seed-service-token}
       FRONTEND_URL: ${FRONTEND_URL:-http://localhost:8095}
       STEAM_OPENID_REALM: ${STEAM_OPENID_REALM:-http://localhost:8095}
       STEAM_OPENID_RETURN_TO: ${STEAM_OPENID_RETURN_TO:-http://localhost:8095/api/auth/steam/callback}
       STEAM_API_KEY: ${STEAM_API_KEY:-}
       BOOTSTRAP_ADMIN_STEAM_IDS: ${BOOTSTRAP_ADMIN_STEAM_IDS:-}
+      # Admin → Ingest → matcha.tf proxies here (start it with --profile consumer).
+      API_CONSUMER_URL: ${API_CONSUMER_URL:-http://api-consumer:8010}
+      API_CONSUMER_API_KEY: ${WEBHOOK_API_KEY:-}
     volumes:
-      - ../../data:/app/data
-      - ../../cqrs:/app/cqrs
+      - ./server/data:/app/data:ro
+      - ./server/cqrs:/app/cqrs:ro
     command: ["uvicorn", "cqrs.command_service.app.main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]
     restart: unless-stopped
-    networks:
-      - app_network
 
   query-service:
-    build:
-      context: ../..
-      dockerfile: dev-setup/docker/Dockerfile
-    container_name: query
+    build: *server-build
     depends_on:
       db:
         condition: service_healthy
@@ -131,18 +98,27 @@ services:
       CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_query
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
     volumes:
-      - ../../data:/app/data
-      - ../../cqrs:/app/cqrs
+      - ./server/cqrs:/app/cqrs:ro
     command: ["uvicorn", "cqrs.query_service.app.main:app", "--host", "0.0.0.0", "--port", "8002", "--reload"]
     restart: unless-stopped
-    networks:
-      - app_network
+
+  # Same-origin gateway on :8095 (mirrors deploy/Caddyfile in production).
+  gateway:
+    image: nginx:1.27-alpine
+    ports:
+      - "8095:80"
+    volumes:
+      - ./dev/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - command-service
+      - query-service
+    restart: unless-stopped
 
   web:
     image: node:20-alpine
     working_dir: /app
     volumes:
-      - ../../../web:/app
+      - ./web:/app
     command: sh -c "npm install && npm run dev -- --host 0.0.0.0 --port 5173"
     ports:
       - "5173:5173"
@@ -152,31 +128,11 @@ services:
       VITE_AUTH_BASE_URL: /api/auth
       VITE_GATEWAY_PROXY_TARGET: http://gateway:80
     depends_on:
-      - command-service
-      - query-service
       - gateway
-    networks:
-      - app_network
-
-  gateway:
-    image: nginx:1.27-alpine
-    container_name: gateway
-    ports:
-      - "8095:80"
-    volumes:
-      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
-    depends_on:
-      - command-service
-      - query-service
-    networks:
-      - app_network
-    restart: unless-stopped
 
   api-consumer:
     build:
-      context: ../../../api-consumer
-      dockerfile: Dockerfile
-    container_name: api-consumer
+      context: ./api-consumer
     depends_on:
       rabbitmq:
         condition: service_started
@@ -195,13 +151,33 @@ services:
       WEBHOOK_ENABLED: "true"
       LOG_LEVEL: info
       ACTOR_ID: api-consumer
-      WEBHOOK_API_KEY: ${WEBHOOK_API_KEY}
+      WEBHOOK_API_KEY: ${WEBHOOK_API_KEY:-}
     restart: unless-stopped
-    networks:
-      - app_network
     profiles:
       - consumer
 
-networks:
-  app_network:
-    driver: bridge
+  # One-shot: replays server/data/seed_logs_cache.json through the command API.
+  seed:
+    build: *server-build
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      command-service:
+        condition: service_started
+      query-service:
+        condition: service_started
+    environment:
+      COMMAND_SERVICE_URL: http://command-service:8001
+      QUERY_SERVICE_URL: http://query-service:8002
+      CQRS_COMMAND_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_command
+      CQRS_QUERY_DATABASE_URL: postgresql+asyncpg://user:password@db:5432/cqrs_query
+      SEED_CACHE_PATH: /app/data/seed_logs_cache.json
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      JWT_SECRET: ${JWT_SECRET:-dev-insecure-jwt-secret-change-me}
+      SEED_SERVICE_TOKEN: ${SEED_SERVICE_TOKEN:-dev-seed-service-token}
+    command: ["python", "seed/seed_cqrs.py", "--http", "--no-fallback"]
+    volumes:
+      - ./server/data:/app/data:ro
+      - ./server/seed:/app/seed:ro
+    profiles:
+      - seed

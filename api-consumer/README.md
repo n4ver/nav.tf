@@ -33,6 +33,9 @@ See [Architecture design](../docs/architecture.md) for the dual-ingest rationale
 | Scheduled poll | node-cron | `POLL_CRON` (default `*/5 * * * *` in Docker) |
 | Manual poll | HTTP POST | `POST /admin/poll` |
 | Webhook | Express | `POST /webhooks/matcha/match` with `{"matchId": 201}` |
+| Admin UI | Command service proxy | Admin → Ingest → *Ingest from matcha.tf* calls `POST /api/v1/commands/sources/matcha/{matches,poll}`, which forwards here with the API key |
+
+The admin UI never sees `WEBHOOK_API_KEY`: the command service holds it as `API_CONSUMER_API_KEY` (falling back to `WEBHOOK_API_KEY`) and reaches this service at `API_CONSUMER_URL`. In local Docker, start the consumer with `docker compose --profile consumer up -d api-consumer`; without it the admin panel reports *api-consumer unreachable*.
 
 ## Ingest flow (matcha.tf)
 
@@ -118,8 +121,8 @@ Ingested matcha logs are tagged with one tournament so they appear together in t
 cd api-consumer
 cp .env.example .env
 
-# Requires RabbitMQ (from server/dev-setup/docker/docker-compose.yml)
-cd ../server && docker compose up -d rabbitmq
+# Requires RabbitMQ (from the root compose.yaml)
+(cd .. && docker compose up -d rabbitmq)
 
 cd ../api-consumer
 npm install
@@ -129,12 +132,13 @@ npm start
 
 ## Run with Docker
 
+From the repository root:
+
 ```bash
-cd server
 docker compose --profile consumer up -d api-consumer
 ```
 
-Environment variables are set in [docker-compose.yml](../server/dev-setup/docker/docker-compose.yml).
+Environment variables are set in [compose.yaml](../compose.yaml).
 
 ## HTTP endpoints
 
@@ -161,7 +165,7 @@ curl -X POST http://localhost:8010/admin/poll \
 
 ```bash
 npm test              # unit tests
-npm run test:coverage # tests + HTML report in server/dev-setup/javascript/coverage/api-consumer/
+npm run test:coverage # tests + HTML report in coverage/
 ```
 
 Fixtures in `tests/fixtures/` include real-shaped matcha and logs.tf responses.
@@ -170,4 +174,4 @@ Fixtures in `tests/fixtures/` include real-shaped matcha and logs.tf responses.
 
 - [Architecture](../docs/architecture.md)
 - [Query service](../server/cqrs/query_service/README.md)
-- [Server Docker Compose](../server/dev-setup/docker/docker-compose.yml)
+- [Local Docker Compose](../compose.yaml)

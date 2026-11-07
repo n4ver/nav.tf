@@ -83,20 +83,20 @@ docker compose --profile seed run --rm seed
 
 ## Prerequisites
 
-- Python 3.11+
+- Python 3.13+
 - Docker (Postgres + RabbitMQ) or local equivalents
 - Dependencies from [server/requirements.txt](../requirements.txt)
 
 ```bash
 cd server
-python -m pip install -r requirements.txt
-python -m pip install pytest
+python -m pip install -r requirements-dev.txt
 ```
 
 ## Run with Docker (recommended)
 
+From the repository root:
+
 ```bash
-cd server
 docker compose up -d db rabbitmq command-service query-service
 ```
 
@@ -104,14 +104,13 @@ Postgres credentials: `user` / `password` on port `5432`. The `db-init` service 
 
 ## Run locally
 
-Start Postgres and RabbitMQ first:
+Start Postgres and RabbitMQ first (from the repository root):
 
 ```bash
-cd server
-docker compose up -d db rabbitmq
+docker compose up -d db db-init rabbitmq
 ```
 
-Then run each service:
+Then run each service from `server/`:
 
 ```bash
 uvicorn cqrs.command_service.app.main:app --host 127.0.0.1 --port 8001 --reload
@@ -174,12 +173,12 @@ Seeding sends cached log metadata through the command service. RabbitMQ delivers
 ### HTTP seed (default — matches production flow)
 
 ```bash
-cd server
-docker compose up -d db rabbitmq command-service query-service
+docker compose up -d db rabbitmq command-service query-service   # repo root
 
-python dev-setup/seed/seed_cqrs.py --http              # seed all cached logs
-python dev-setup/seed/seed_cqrs.py --http --reset      # truncate tables, then seed
-python dev-setup/seed/seed_cqrs.py --http --limit 10   # seed first 10 logs
+cd server
+python seed/seed_cqrs.py --http              # seed all cached logs
+python seed/seed_cqrs.py --http --reset      # truncate tables, then seed
+python seed/seed_cqrs.py --http --limit 10   # seed first 10 logs
 ```
 
 One-shot via Docker:
@@ -192,7 +191,7 @@ With reset:
 
 ```bash
 docker compose --profile seed run --rm seed \
-  python dev-setup/seed/seed_cqrs.py --http --reset --no-fallback
+  python seed/seed_cqrs.py --http --reset --no-fallback
 ```
 
 ### Direct seed (in-process, no RabbitMQ)
@@ -200,8 +199,8 @@ docker compose --profile seed run --rm seed \
 Writes to the same Postgres databases through CQRS handlers with an in-memory broker:
 
 ```bash
-python dev-setup/seed/seed_cqrs.py --direct
-python dev-setup/seed/seed_cqrs.py --direct --reset
+python seed/seed_cqrs.py --direct
+python seed/seed_cqrs.py --direct --reset
 ```
 
 Stop the query service first, or pass `--force` if it is already running.
@@ -209,11 +208,11 @@ Stop the query service first, or pass `--force` if it is already running.
 ### Building the seed cache
 
 ```bash
-python dev-setup/seed/build_seed_cache.py              # fetch from logs.tf + write cache
-python dev-setup/seed/build_seed_cache.py --skip-fetch   # rebuild manifest from existing cache
+python seed/build_seed_cache.py              # fetch from logs.tf + write cache
+python seed/build_seed_cache.py --skip-fetch   # rebuild manifest from existing cache
 ```
 
-Source log IDs come from [invite.txt](../dev-setup/seed/invite.txt).
+Source log IDs come from [invite.txt](../seed/invite.txt).
 
 ### Reset behavior
 
@@ -244,8 +243,8 @@ The query consumer listens on queue `cqrs-query` (topic `events.#`) and upserts:
 
 ```bash
 cd server
-python -m pytest cqrs/tests -q
+python -m pytest -q
 ```
 
 Tests require Docker Postgres with `cqrs_command_test` and `cqrs_query_test` databases (`docker compose up -d db db-init`).
-Test database init scripts are under `server/cqrs/tests/postgres/`.
+The `db-init` service creates them with [`cqrs/tests/ensure-test-databases.sh`](tests/ensure-test-databases.sh).

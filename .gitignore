@@ -11,13 +11,10 @@ __pycache__/
 .venv/
 venv/
 
-# Local database artifacts (SQLite test DBs live under server/testing/databases/)
-*.db
-*.db-shm
-*.db-wal
+# Local environment (copy .env.example)
+.env
 
 # OS
 .DS_Store
 Thumbs.db
 
-classifier/

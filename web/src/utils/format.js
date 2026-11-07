@@ -67,3 +67,23 @@ export function matchPath(matchId) {
 export function playerPath(steamId) {
   return `/player/${encodeURIComponent(String(steamId))}`
 }
+
+/** `[{ event_id, name }]` → `{ [event_id]: name }` for tournament labels. */
+export function eventNamesById(events) {
+  const names = {}
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.event_id != null) names[String(event.event_id)] = event.name || ''
+  }
+  return names
+}
+
+/**
+ * Display label for a tournament: `Event Name - Tournament Name`, or just the
+ * tournament name when it is not linked to an event.
+ */
+export function formatTournamentLabel(tournament, eventNames = {}) {
+  const name = tournament?.name || tournament?.slug || 'Untitled tournament'
+  const eventId = tournament?.event_id
+  const eventName = eventId != null ? eventNames[String(eventId)] : ''
+  return eventName ? `${eventName} - ${name}` : name
+}

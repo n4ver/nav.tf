@@ -12,7 +12,7 @@ import StateMessage from '../components/ui/StateMessage.vue'
 import { useCan } from '../composables/useCan'
 import { useMatchQueryStore } from '../stores/matchQuery'
 import { useRatingQueryStore } from '../stores/ratingQuery'
-import { errorMessage, formatDate } from '../utils/format'
+import { errorMessage, eventNamesById, formatDate, formatTournamentLabel } from '../utils/format'
 import { formatRating, ratingTone } from '../utils/rating'
 
 const route = useRoute()
@@ -32,10 +32,14 @@ const {
 const tournaments = ref([])
 const tournamentsLoading = ref(false)
 const tournamentsError = ref('')
+/** '' = all matches in the current event scope. */
 const selectedTournament = ref('')
 const classFilter = ref('')
 const events = ref([])
+/** '' = all events. */
 const selectedEvent = ref('')
+
+const eventNames = computed(() => eventNamesById(events.value))
 
 const visibleTournaments = computed(() => {
   if (!selectedEvent.value) return tournaments.value
@@ -43,12 +47,35 @@ const visibleTournaments = computed(() => {
 })
 
 const selectedTournamentMeta = computed(
-  () => tournaments.value.find((t) => String(t.tournament_id) === selectedTournament.value) || null,
+  () => visibleTournaments.value.find((t) => String(t.tournament_id) === selectedTournament.value) || null,
 )
 
-const selectedEventName = computed(() => {
+/** The scope actually shown: a tournament outside the chosen event falls back to "All matches". */
+const scope = computed(() => ({
+  eventId: selectedEvent.value,
+  tournamentId: selectedTournamentMeta.value ? selectedTournament.value : '',
+}))
+const scopeKey = computed(() => `${scope.value.eventId}|${scope.value.tournamentId}`)
+
+const selectedEventName = computed(() => (selectedEvent.value ? eventNames.value[selectedEvent.value] || '' : ''))
+
+const allMatchesLabel = computed(() =>
+  selectedEventName.value ? `${selectedEventName.value} - All matches` : 'All matches',
+)
+
+const scopeLabel = computed(() =>
+  selectedTournamentMeta.value
+    ? formatTournamentLabel(selectedTournamentMeta.value, eventNames.value)
+    : allMatchesLabel.value,
+)
+
+const scopeMatchCount = computed(() =>
+  visibleTournaments.value.reduce((sum, row) => sum + (Number(row.match_count) || 0), 0),
+)
+
+const tournamentEventName = computed(() => {
   const id = selectedTournamentMeta.value?.event_id
-  return id ? events.value.find((e) => String(e.event_id) === String(id))?.name || '' : ''
+  return id ? eventNames.value[String(id)] || '' : ''
 })
 
 const benchmarkColumns = [
@@ -73,13 +100,13 @@ async function loadTournaments() {
     const [tournamentRows, eventRows] = await Promise.all([fetchTournaments(), fetchEvents()])
     tournaments.value = Array.isArray(tournamentRows) ? tournamentRows : []
     events.value = Array.isArray(eventRows) ? eventRows : []
-    const requested = String(route.query.tournament || '')
-    if (requested && tournaments.value.some((row) => String(row.tournament_id) === requested)) {
-      selectedTournament.value = requested
+    const requestedEvent = String(route.query.event || '')
+    if (requestedEvent && events.value.some((row) => String(row.event_id) === requestedEvent)) {
+      selectedEvent.value = requestedEvent
     }
-    const visible = visibleTournaments.value
-    if (!selectedTournament.value && visible.length) {
-      selectedTournament.value = String(visible[0].tournament_id)
+    const requested = String(route.query.tournament || '')
+    if (requested && visibleTournaments.value.some((row) => String(row.tournament_id) === requested)) {
+      selectedTournament.value = requested
     }
   } catch (error) {
     tournaments.value = []
@@ -89,10 +116,24 @@ async function loadTournaments() {
   }
 }
 
-function loadTournamentData(tournamentId) {
+let loadedKey = null
+
+function loadScopeData() {
+  loadedKey = scopeKey.value
+  const { eventId, tournamentId } = scope.value
   return Promise.all([
-    matchQuery.loadMatches({ page: 1, pageSize: 12, tournamentId }),
-    ratingQuery.loadLeaderboard(tournamentId, { className: classFilter.value, limit: 50, force: true }),
+    matchQuery.loadMatches({
+      page: 1,
+      pageSize: 12,
+      tournamentId: tournamentId || null,
+      eventId: tournamentId ? null : eventId || null,
+    }),
+    ratingQuery.loadLeaderboard(tournamentId, {
+      eventId: tournamentId ? '' : eventId,
+      className: classFilter.value,
+      limit: 50,
+      force: true,
+    }),
   ])
 }
 
@@ -100,30 +141,24 @@ onMounted(async () => {
   await loadTournaments()
   await Promise.all([
     ratingQuery.loadBenchmarks({ force: true }),
-    selectedTournament.value ? loadTournamentData(selectedTournament.value) : null,
+    tournaments.value.length && loadedKey !== scopeKey.value ? loadScopeData() : null,
   ])
 })
 
-watch(selectedTournament, async (tournamentId, previous) => {
-  // The initial selection is loaded by onMounted.
-  if (!tournamentId || !previous) return
-  await loadTournamentData(tournamentId)
+watch(scopeKey, async (key) => {
+  // Skip until the initial load has run, and skip keys that are already loaded.
+  if (loadedKey === null || key === loadedKey) return
+  await loadScopeData()
 })
 
 watch(selectedEvent, () => {
-  const visible = visibleTournaments.value
-  if (!visible.some((row) => String(row.tournament_id) === selectedTournament.value)) {
-    selectedTournament.value = visible.length ? String(visible[0].tournament_id) : ''
-  }
+  // Drop a tournament selection that the new event filter hides.
+  if (!selectedTournamentMeta.value) selectedTournament.value = ''
 })
 
 watch(classFilter, async () => {
-  if (!selectedTournament.value) return
-  await ratingQuery.loadLeaderboard(selectedTournament.value, {
-    className: classFilter.value,
-    limit: 50,
-    force: true,
-  })
+  if (loadedKey === null) return
+  await loadScopeData()
 })
 </script>
 
@@ -147,30 +182,45 @@ watch(classFilter, async () => {
       </StateMessage>
     </Panel>
 
-    <!-- Tournament tabs + event filter -->
+    <!-- Scope bar: event filter, then "All matches" + one tab per tournament -->
     <div v-else class="flex flex-wrap items-center gap-2" data-test="tournament-tabs">
-      <label v-if="events.length" class="sr-only" for="event-filter">Event</label>
-      <select
-        v-if="events.length"
-        id="event-filter"
-        v-model="selectedEvent"
-        class="field w-auto py-1 text-xs"
+      <label v-if="events.length" class="flex items-center gap-1.5 text-xs font-semibold text-ink-muted">
+        Event
+        <select
+          id="event-filter"
+          v-model="selectedEvent"
+          class="field w-auto py-1 text-xs"
+          data-test="event-filter"
+        >
+          <option value="">All events</option>
+          <option v-for="event in events" :key="event.event_id" :value="String(event.event_id)">
+            {{ event.name }}
+          </option>
+        </select>
+      </label>
+      <span v-if="events.length" class="mx-1 hidden h-5 w-px bg-line sm:block" aria-hidden="true" />
+      <button
+        type="button"
+        class="tab"
+        :class="{ 'tab-active': !scope.tournamentId }"
+        :aria-pressed="!scope.tournamentId"
+        data-test="tab-all"
+        @click="selectedTournament = ''"
       >
-        <option value="">All events</option>
-        <option v-for="event in events" :key="event.event_id" :value="String(event.event_id)">
-          {{ event.name }}
-        </option>
-      </select>
+        {{ allMatchesLabel }}
+        <span class="ml-1.5 tabular-nums opacity-70">{{ scopeMatchCount }}</span>
+      </button>
       <button
         v-for="tournament in visibleTournaments"
         :key="tournament.tournament_id"
         type="button"
         class="tab"
-        :class="{ 'tab-active': String(tournament.tournament_id) === selectedTournament }"
-        :aria-pressed="String(tournament.tournament_id) === selectedTournament"
+        :class="{ 'tab-active': String(tournament.tournament_id) === scope.tournamentId }"
+        :aria-pressed="String(tournament.tournament_id) === scope.tournamentId"
+        :title="tournament.slug"
         @click="selectedTournament = String(tournament.tournament_id)"
       >
-        {{ tournament.name }}
+        {{ formatTournamentLabel(tournament, eventNames) }}
         <span class="ml-1.5 tabular-nums opacity-70">{{ Number(tournament.match_count) || 0 }}</span>
       </button>
       <StateMessage v-if="!visibleTournaments.length">No tournaments in this event yet.</StateMessage>
@@ -185,7 +235,7 @@ watch(classFilter, async () => {
         <StateMessage v-if="matchesError" tone="error" class="m-3">{{ matchesError }}</StateMessage>
         <MatchResultList
           v-else
-          :matches="selectedTournament ? matches : []"
+          :matches="tournaments.length ? matches : []"
           :loading="matchesLoading"
           compact
           empty-message="No matches projected yet."
@@ -195,14 +245,14 @@ watch(classFilter, async () => {
       <!-- Centre: leaderboard -->
       <Panel flush class="order-1 lg:order-2">
         <template #title>
-          {{ selectedTournamentMeta ? `${selectedTournamentMeta.name} — leaderboard` : 'Leaderboard' }}
+          {{ tournaments.length ? `${scopeLabel} — leaderboard` : 'Leaderboard' }}
         </template>
         <PlayerLeaderboard
           v-model:class-filter="classFilter"
-          :rows="selectedTournament ? leaderboard : []"
+          :rows="tournaments.length ? leaderboard : []"
           :loading="leaderboardLoading"
           :error="leaderboardError"
-          :empty-message="selectedTournament ? 'No players rated for this filter yet.' : 'Select a tournament.'"
+          empty-message="No players rated for this filter yet."
         />
       </Panel>
 
@@ -212,11 +262,11 @@ watch(classFilter, async () => {
           <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
             <dt class="text-ink-muted">Name</dt>
             <dd class="font-semibold">{{ selectedTournamentMeta.name }}</dd>
-            <template v-if="selectedEventName">
+            <template v-if="tournamentEventName">
               <dt class="text-ink-muted">Event</dt>
               <dd>
                 <RouterLink class="data-link" :to="{ name: 'event', params: { eventId: selectedTournamentMeta.event_id } }">
-                  {{ selectedEventName }}
+                  {{ tournamentEventName }}
                 </RouterLink>
               </dd>
             </template>
@@ -224,6 +274,26 @@ watch(classFilter, async () => {
             <dd class="tabular-nums">{{ Number(selectedTournamentMeta.match_count) || 0 }}</dd>
             <dt class="text-ink-muted">Started</dt>
             <dd>{{ formatDate(selectedTournamentMeta.started_at) }}</dd>
+          </dl>
+        </Panel>
+
+        <Panel v-else-if="tournaments.length" title="Scope" data-test="scope-summary">
+          <dl class="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-sm">
+            <dt class="text-ink-muted">Event</dt>
+            <dd class="font-semibold">
+              <RouterLink
+                v-if="selectedEvent"
+                class="data-link"
+                :to="{ name: 'event', params: { eventId: selectedEvent } }"
+              >
+                {{ selectedEventName }}
+              </RouterLink>
+              <template v-else>All events</template>
+            </dd>
+            <dt class="text-ink-muted">Tournaments</dt>
+            <dd class="tabular-nums">{{ visibleTournaments.length }}</dd>
+            <dt class="text-ink-muted">Matches</dt>
+            <dd class="tabular-nums">{{ scopeMatchCount }}</dd>
           </dl>
         </Panel>
 

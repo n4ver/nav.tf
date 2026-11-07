@@ -2,7 +2,7 @@
 *
 !server/requirements.txt
 !server/cqrs/
-!server/dev-setup/seed/
+!server/seed/
 !server/data/seed_logs_cache.json
 **/__pycache__
 **/*.py[cod]

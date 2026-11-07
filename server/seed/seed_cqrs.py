@@ -2,11 +2,14 @@
 
 Default path (Docker / local microservices):
   docker compose up -d db rabbitmq command-service query-service
-  python dev-setup/seed/seed_cqrs.py --http
+  python seed/seed_cqrs.py --http
   # or: docker compose --profile seed run --rm seed
 
 Direct path (no HTTP/RabbitMQ; writes Postgres through in-process handlers):
-  python dev-setup/seed/seed_cqrs.py --direct
+  python seed/seed_cqrs.py --direct
+
+Both paths first create the events in SEED_EVENTS and link their brackets, so
+the Invite and Qualifier brackets land in "AsiaFortress Spring 2026".
 """
 
 from __future__ import annotations
@@ -22,10 +25,8 @@ import httpx
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
-SERVER_ROOT = Path(__file__).resolve().parents[2]
-DEV_SETUP_DIR = Path(__file__).resolve().parent
+SERVER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SERVER_ROOT))
-sys.path.insert(0, str(SERVER_ROOT / "dev-setup"))
 
 CACHE_FILE = SERVER_ROOT / "data" / "seed_logs_cache.json"
 COMMAND_SERVICE_URL = os.getenv("COMMAND_SERVICE_URL", "http://127.0.0.1:8001").rstrip(
@@ -37,6 +38,32 @@ HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
 MAX_HTTP_RETRIES = 3
 PROJECTION_WAIT_SECONDS = 90
 SEED_ACTOR_STEAM_ID = os.getenv("SEED_ACTOR_STEAM_ID", "76561198000000000")
+
+# Events created before ingest, grouping catalog brackets (cqrs.shared.tournaments
+# TOURNAMENT_CATALOG ids). Linking first means every seeded match is ingested
+# into an already-linked tournament, so the event leaderboard is built as it goes.
+SEED_EVENTS: list[dict] = [
+    {
+        "name": "AsiaFortress Spring 2026",
+        "slug": "asiafortress-spring-2026",
+        "catalog_tournament_ids": [1, 2],  # Invite Bracket, Qualifier Bracket
+    },
+]
+
+
+def _seed_event_links() -> list[tuple[dict, str, list[str]]]:
+    """(event definition, event_id, tournament_ids) for each SEED_EVENTS entry."""
+    from cqrs.shared.event_ids import stable_event_uuid_from_slug
+    from cqrs.shared.tournaments import stable_tournament_uuid
+
+    return [
+        (
+            event,
+            str(stable_event_uuid_from_slug(event["slug"])),
+            [str(stable_tournament_uuid(cid)) for cid in event["catalog_tournament_ids"]],
+        )
+        for event in SEED_EVENTS
+    ]
 
 
 def _seed_auth_headers() -> dict[str, str]:
@@ -63,7 +90,7 @@ def _load_logs(cache_path: Path, limit: int | None) -> list[dict]:
     if not cache_path.exists():
         raise SystemExit(
             f"Cache file not found: {cache_path}\n"
-            "Build it first with: python dev-setup/seed/build_seed_cache.py"
+            "Build it first with: python seed/build_seed_cache.py"
         )
     payload = json.loads(cache_path.read_text(encoding="utf-8"))
     logs = payload.get("logs", [])
@@ -164,6 +191,63 @@ async def _request_with_retries(
     raise last_error
 
 
+async def _ensure_seed_events_http(client: httpx.AsyncClient) -> None:
+    """Create SEED_EVENTS (409 = already there) and link their brackets, idempotently."""
+    for event, event_id, tournament_ids in _seed_event_links():
+        response = await _request_with_retries(
+            client,
+            "POST",
+            f"{COMMAND_SERVICE_URL}/api/v1/commands/events",
+            json={"name": event["name"], "slug": event["slug"]},
+            headers=_seed_auth_headers(),
+        )
+        if response.status_code not in (202, 409):
+            raise SystemExit(
+                f"Could not create event {event['slug']}: "
+                f"HTTP {response.status_code} {response.text[:200]}"
+            )
+        for tournament_id in tournament_ids:
+            link = await _request_with_retries(
+                client,
+                "PATCH",
+                f"{COMMAND_SERVICE_URL}/api/v1/commands/tournaments/{tournament_id}/event",
+                json={"event_id": event_id},
+                headers=_seed_auth_headers(),
+            )
+            if link.status_code != 202:
+                raise SystemExit(
+                    f"Could not link tournament {tournament_id} to {event['slug']}: "
+                    f"HTTP {link.status_code} {link.text[:200]}"
+                )
+        print(f"Event {event['name']!r}: linked {len(tournament_ids)} tournament(s)")
+
+
+async def _ensure_seed_events_direct(session_factory) -> None:
+    from fastapi import HTTPException
+
+    from cqrs.command_service.app.services import CommandService
+    from cqrs.shared.schemas import CreateEventCommand, LinkTournamentToEventCommand
+
+    for event, event_id, tournament_ids in _seed_event_links():
+        async with session_factory() as session:
+            try:
+                await CommandService(session).create_event(
+                    CreateEventCommand(name=event["name"], slug=event["slug"]),
+                    actor_id=SEED_ACTOR_STEAM_ID,
+                )
+            except HTTPException as exc:
+                if exc.status_code != 409:
+                    raise
+        for tournament_id in tournament_ids:
+            async with session_factory() as session:
+                await CommandService(session).link_tournament_to_event(
+                    tournament_id,
+                    LinkTournamentToEventCommand(event_id=event_id),
+                    actor_id=SEED_ACTOR_STEAM_ID,
+                )
+        print(f"Event {event['name']!r}: linked {len(tournament_ids)} tournament(s)")
+
+
 async def _verify_command_service(client: httpx.AsyncClient, url: str) -> None:
     health_url = f"{url}/health"
     for _ in range(30):
@@ -209,7 +293,7 @@ async def _verify_command_service(client: httpx.AsyncClient, url: str) -> None:
                     raise CommandServiceUnavailable(
                         f"Command service at {url} is running old code without "
                         "/api/v1/commands/logs/ingest-cached. Rebuild/restart it, or run:\n"
-                        "  python dev-setup/seed/seed_cqrs.py --direct"
+                        "  python seed/seed_cqrs.py --direct"
                     )
             print(f"Command service ready at {url}")
             return
@@ -318,6 +402,8 @@ async def seed_http(
 
         await _verify_query_service(client, QUERY_SERVICE_URL)
 
+        await _ensure_seed_events_http(client)
+
         before = await _count_query_matches_http(client)
         print(f"Query matches before seed: {before}")
         print(f"Seeding {len(logs)} cached logs through {COMMAND_SERVICE_URL} ...")
@@ -375,9 +461,9 @@ async def seed_http(
             print(
                 "Some commands did not project to the query Postgres DB. "
                 "Ensure RabbitMQ is healthy, then retry:\n"
-                "  python dev-setup/seed/seed_cqrs.py --http\n"
+                "  python seed/seed_cqrs.py --http\n"
                 "or seed in-process:\n"
-                "  python dev-setup/seed/seed_cqrs.py --direct --force"
+                "  python seed/seed_cqrs.py --direct --force"
             )
             raise SystemExit(1)
 
@@ -398,7 +484,7 @@ async def seed_direct(
             raise SystemExit(
                 "Query service is running on port 8002. Prefer HTTP seeding so RabbitMQ "
                 "projections stay consistent:\n"
-                "  python dev-setup/seed/seed_cqrs.py --http\n"
+                "  python seed/seed_cqrs.py --http\n"
                 "Or pass --force to write Postgres directly while services are up."
             )
 
@@ -427,6 +513,8 @@ async def seed_direct(
     await init_write_db()
     await init_read_db()
     BROKER.subscribe(handle_integration_event_idempotent)
+
+    await _ensure_seed_events_direct(CommandSessionLocal)
 
     before = await _count_query_matches_direct()
     print(f"Direct CQRS seed using in-memory broker ({len(logs)} logs)")

@@ -22,13 +22,16 @@ from ...shared.schemas import (
     CreateEventCommand,
     CreateTournamentCommand,
     IngestLogsTfCommand,
+    IngestMatchaMatchCommand,
     LinkTournamentToEventCommand,
+    PollMatchaCommand,
     RawLogUpload,
     UpdateEventCommand,
     UpdatePlayerDisplayNameCommand,
     UpdateTournamentCommand,
 )
 from ...shared.settings import enforce_production_settings, fastapi_docs_kwargs
+from . import api_consumer
 from .auth_service import AuthService
 from .db import get_write_session, init_write_db
 from .dependencies import AuthenticatedUser, get_current_admin_user, get_current_user
@@ -158,6 +161,34 @@ async def ingest_logstf(
 ) -> dict[str, object]:
     service = CommandService(session)
     return await service.ingest_logs_tf(payload, actor_id=admin.steam_id)
+
+
+# ── External sources via api-consumer (Admin RBAC) ─────────────────────────
+
+
+@app.get("/api/v1/commands/sources/matcha/status")
+async def matcha_source_status(
+    _admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    return await api_consumer.api_consumer_status()
+
+
+@app.post("/api/v1/commands/sources/matcha/matches", status_code=202)
+async def ingest_matcha_match(
+    payload: IngestMatchaMatchCommand,
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    logger.info("admin %s requested matcha.tf ingest of match %s", admin.steam_id, payload.match_id)
+    return await api_consumer.ingest_matcha_match(payload.match_id)
+
+
+@app.post("/api/v1/commands/sources/matcha/poll", status_code=202)
+async def poll_matcha(
+    payload: PollMatchaCommand,
+    admin: Annotated[AuthenticatedUser, Depends(get_current_admin_user)],
+) -> dict[str, object]:
+    logger.info("admin %s requested matcha.tf poll (reset=%s)", admin.steam_id, payload.reset)
+    return await api_consumer.poll_matcha(reset=payload.reset)
 
 
 @app.post("/api/v1/commands/players/display-name", status_code=202)

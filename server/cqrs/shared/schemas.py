@@ -39,6 +39,18 @@ class IngestLogsTfCommand(BaseModel):
     tournament_id: UUID | None = None
 
 
+class IngestMatchaMatchCommand(BaseModel):
+    """Admin command: ingest one matcha.tf match through the api-consumer."""
+
+    match_id: int = Field(gt=0)
+
+
+class PollMatchaCommand(BaseModel):
+    """Admin command: run one api-consumer poll of the configured matcha.tf league."""
+
+    reset: bool = False
+
+
 class ClassStatSnapshot(BaseModel):
     """Per-class MatchStat-equivalent payload carried inside MatchParsed.
 
